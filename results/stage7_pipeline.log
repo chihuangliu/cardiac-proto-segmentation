@@ -1,0 +1,11 @@
+=== CT Training ===
+=== MR Training ===
+=== CT 3D Eval ===
+=== MR 3D Eval ===
+=== CT XAI ===
+=== MR XAI ===
+Stage 7 DONE
+.
+MR retrain done. Running MR 3D eval...
+Running MR XAI...
+MR pipeline done.

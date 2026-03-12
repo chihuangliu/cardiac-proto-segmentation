@@ -1,0 +1,62 @@
+
+============================================================
+  Training ProtoSegNet — CT
+  Device: mps  |  Batch: 16  |  Max epochs: 100
+  λ_div=0.01  |  Projection every 10 epochs (Phase B)
+============================================================
+
+  Train: 3389 slices  Val: 382 slices  Test: 484 slices
+  Loaded class weights from class_weights_ct.pt
+  Model params: 2,556,264
+  Phase A: backbone + decoder; prototypes frozen (epochs 1–20)
+
+  [A] Ep   1/100 | loss=1.2934 (D=0.9401 CE=1.6468 div=0.0000) | val=0.2067 ← best | lr=3.00e-04 | 36.6s
+  [A] Ep   5/100 | loss=0.3030 (D=0.3322 CE=0.2739 div=0.0000) | val=0.6167 ← best | lr=2.98e-04 | 35.6s
+  [A] Ep  10/100 | loss=0.1370 (D=0.1460 CE=0.1280 div=0.0000) | val=0.7561 ← best | lr=2.93e-04 | 35.4s
+  [A] Ep  15/100 | loss=0.0921 (D=0.1001 CE=0.0842 div=0.0000) | val=0.7217 | lr=2.84e-04 | 35.5s
+  [A] Ep  20/100 | loss=0.0744 (D=0.0824 CE=0.0664 div=0.0000) | val=0.7477 | lr=2.71e-04 | 35.5s
+
+  → Phase B: all params; diversity loss active (epochs 21–80)
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 65.0s
+  [B] Ep  25/100 | loss=9.2071 (D=0.2256 CE=0.2461 div=897.1291) | val=0.6183 | lr=2.56e-04 | 42.8s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 66.8s
+  [B] Ep  30/100 | loss=4.7882 (D=0.1823 CE=0.1756 div=460.9210) | val=0.7062 | lr=2.38e-04 | 43.1s
+  [B] Ep  35/100 | loss=3.0892 (D=0.1437 CE=0.1303 div=295.2242) | val=0.7116 | lr=2.18e-04 | 43.0s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 70.4s
+  [B] Ep  40/100 | loss=2.9294 (D=0.1256 CE=0.1121 div=281.0534) | val=0.6881 | lr=1.96e-04 | 44.2s
+  [B] Ep  45/100 | loss=2.7084 (D=0.1079 CE=0.0925 div=260.8188) | val=0.6868 | lr=1.73e-04 | 43.6s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 66.8s
+  [B] Ep  50/100 | loss=2.8377 (D=0.0990 CE=0.0838 div=274.6351) | val=0.7201 | lr=1.50e-04 | 43.1s
+  [B] Ep  55/100 | loss=2.6338 (D=0.0898 CE=0.0729 div=255.2443) | val=0.7760 ← best | lr=1.27e-04 | 42.9s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 65.6s
+  [B] Ep  60/100 | loss=2.8839 (D=0.0852 CE=0.0679 div=280.7401) | val=0.7572 | lr=1.04e-04 | 40.9s
+  [B] Ep  65/100 | loss=2.6096 (D=0.0783 CE=0.0622 div=253.9331) | val=0.7897 ← best | lr=8.19e-05 | 42.9s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 67.7s
+  [B] Ep  70/100 | loss=2.9732 (D=0.0731 CE=0.0565 div=290.8419) | val=0.7468 | lr=6.18e-05 | 42.8s
+  [B] Ep  75/100 | loss=2.7319 (D=0.0691 CE=0.0525 div=267.1102) | val=0.7380 | lr=4.39e-05 | 42.9s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 65.6s
+  [B] Ep  80/100 | loss=7.4391 (D=0.1199 CE=0.1561 div=730.1071) | val=0.7709 | lr=2.86e-05 | 42.7s
+
+  → Phase C: decoder fine-tuning only (epochs 81–100)
+  [C] Ep  85/100 | loss=4.3024 (D=0.0837 CE=0.0675 div=422.6772) | val=0.7838 | lr=1.63e-05 | 25.2s
+  [C] Ep  90/100 | loss=4.3010 (D=0.0834 CE=0.0670 div=422.5742) | val=0.7864 | lr=7.34e-06 | 25.1s
+  [C] Ep  95/100 | loss=4.2989 (D=0.0815 CE=0.0650 div=422.5648) | val=0.7793 | lr=1.85e-06 | 25.1s
+  [C] Ep 100/100 | loss=4.2985 (D=0.0807 CE=0.0650 div=422.5699) | val=0.7835 | lr=0.00e+00 | 25.3s
+
+  Best val mean fg Dice: 0.7897 at epoch 65
+  Checkpoint : checkpoints/proto_seg_ct.pth
+  Log        : results/train_curve_proto_ct.csv

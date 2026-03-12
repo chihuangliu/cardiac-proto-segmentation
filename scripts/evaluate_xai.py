@@ -141,8 +141,10 @@ def main() -> None:
 
     # ── Load model ────────────────────────────────────────────────────────────
     model = ProtoSegNet(n_classes=N_CLASSES).to(device)
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    state = ckpt.get("model_state_dict", ckpt)
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    state = (ckpt.get("model_state_dict")
+             or ckpt.get("model_state")
+             or ckpt)
     model.load_state_dict(state)
     model.eval()
     print(f"Model loaded ({sum(p.numel() for p in model.parameters()):,} params)")

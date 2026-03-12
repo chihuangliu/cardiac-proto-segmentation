@@ -1,0 +1,104 @@
+Device    : mps
+Modality  : MR
+Checkpoint: checkpoints/proto_seg_mr.pth
+Spacing   : [1.0, 1.0, 1.0] mm
+Model     : ProtoSegNet (2,556,264 params)
+
+[1/2] mr_1019  (121 slices)
+  3D Dice (mean fg) = 0.8345  |  ASSD (mean fg) = 1.58 mm
+  Class           3D Dice   ASSD (mm)
+  ------------------------------------
+  LV               0.7748        1.94
+  RV               0.8495        1.31
+  LA               0.9443        0.67
+  RA               0.8667        1.70
+  Myocardium       0.9161        1.01
+  Aorta            0.7949        2.35
+  PA               0.6951        2.10
+
+  Saved NIfTI: results/nifti/mr_1019_pred.nii.gz
+  Saved NIfTI: results/nifti/mr_1019_gt.nii.gz
+[2/2] mr_1020  (115 slices)
+  3D Dice (mean fg) = 0.7749  |  ASSD (mean fg) = 3.19 mm
+  Class           3D Dice   ASSD (mm)
+  ------------------------------------
+  LV               0.7845        3.43
+  RV               0.8483        1.27
+  LA               0.9270        0.91
+  RA               0.8193        4.92
+  Myocardium       0.8906        1.70
+  Aorta            0.4845        7.50
+  PA               0.6701        2.60
+
+  Saved NIfTI: results/nifti/mr_1020_pred.nii.gz
+  Saved NIfTI: results/nifti/mr_1020_gt.nii.gz
+=======================================================
+ Aggregate results — MR (2 test patients)
+=======================================================
+  Class           3D Dice   ASSD (mm)
+  ------------------------------------
+  LV               0.7796        2.69
+  RV               0.8489        1.29
+  LA               0.9356        0.79
+  RA               0.8430        3.31
+  Myocardium       0.9034        1.35
+  Aorta            0.6397        4.93
+  PA               0.6826        2.35
+  ------------------------------------
+  Mean (fg)        0.8047        2.39
+
+  Stage 7 Success Criteria
+  3D Dice ≥ 0.67: 0.8047  ✅
+  ASSD   ≤ 7.0 mm: 2.39  ✅
+Device    : mps
+Modality  : MR
+Checkpoint: checkpoints/proto_seg_mr.pth
+Spacing   : [1.0, 1.0, 1.0] mm
+Model     : ProtoSegNet (2,556,264 params)
+
+[1/2] mr_1019  (121 slices)
+  3D Dice (mean fg) = 0.8195  |  ASSD (mean fg) = 2.10 mm
+  Class           3D Dice   ASSD (mm)
+  ------------------------------------
+  LV               0.7751        1.44
+  RV               0.8221        1.57
+  LA               0.9397        0.74
+  RA               0.8779        2.58
+  Myocardium       0.9218        1.05
+  Aorta            0.7554        5.60
+  PA               0.6445        1.69
+
+  Saved NIfTI: results/nifti/mr_1019_pred.nii.gz
+  Saved NIfTI: results/nifti/mr_1019_gt.nii.gz
+[2/2] mr_1020  (115 slices)
+  3D Dice (mean fg) = 0.8031  |  ASSD (mean fg) = 2.11 mm
+  Class           3D Dice   ASSD (mm)
+  ------------------------------------
+  LV               0.8523        1.28
+  RV               0.8268        1.31
+  LA               0.9372        0.84
+  RA               0.8397        4.70
+  Myocardium       0.8961        1.23
+  Aorta            0.6389        3.14
+  PA               0.6309        2.29
+
+  Saved NIfTI: results/nifti/mr_1020_pred.nii.gz
+  Saved NIfTI: results/nifti/mr_1020_gt.nii.gz
+=======================================================
+ Aggregate results — MR (2 test patients)
+=======================================================
+  Class           3D Dice   ASSD (mm)
+  ------------------------------------
+  LV               0.8137        1.36
+  RV               0.8244        1.44
+  LA               0.9385        0.79
+  RA               0.8588        3.64
+  Myocardium       0.9090        1.14
+  Aorta            0.6971        4.37
+  PA               0.6377        1.99
+  ------------------------------------
+  Mean (fg)        0.8113        2.10
+
+  Stage 7 Success Criteria
+  3D Dice ≥ 0.67: 0.8113  ✅
+  ASSD   ≤ 7.0 mm: 2.10  ✅

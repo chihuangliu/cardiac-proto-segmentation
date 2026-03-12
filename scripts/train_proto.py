@@ -1,0 +1,316 @@
+#!/usr/bin/env python
+"""
+scripts/train_proto.py
+Stage 7 — ProtoSegNet Training
+
+3-phase training schedule:
+  Phase A (ep 1–20):   backbone + decoder; prototypes frozen
+  Phase B (ep 21–80):  all params; diversity loss; projection every 10 ep
+  Phase C (ep 81–100): decoder fine-tuning only
+
+Usage:
+    python scripts/train_proto.py --modality ct
+    python scripts/train_proto.py --modality mr
+"""
+
+import argparse
+import csv
+import sys
+import time
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import os
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
+from src.data.mmwhs_dataset import (
+    MMWHSSliceDataset,
+    make_dataloaders,
+    LABEL_NAMES,
+    NUM_CLASSES,
+)
+from src.models.proto_seg_net import ProtoSegNet
+from src.models.prototype_layer import PrototypeProjection, PROTOS_PER_LEVEL
+from src.losses.segmentation import SegmentationLoss, compute_class_weights
+from src.losses.diversity_loss import ProtoSegLoss
+from src.metrics.dice import dice_per_class, mean_foreground_dice
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+DATA_DIR    = ROOT / "data" / "pack" / "processed_data"
+CKPT_DIR    = ROOT / "checkpoints"
+RESULT_DIR  = ROOT / "results"
+
+BATCH_SIZE          = 16
+LR                  = 3e-4
+WEIGHT_DECAY        = 1e-5
+LAMBDA_DIV          = 0.01
+PHASE_A_END         = 20
+PHASE_B_END         = 80
+PHASE_C_END         = 100
+MAX_EPOCHS          = PHASE_C_END
+VAL_EVERY           = 5
+PATIENCE            = 15
+PROJECTION_INTERVAL = 10
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def pick_device() -> torch.device:
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+@torch.no_grad()
+def validate_slices(model, loader, device):
+    model.eval()
+    all_logits, all_labels = [], []
+    for batch in loader:
+        logits, _ = model(batch["image"].to(device))
+        all_logits.append(logits.cpu())
+        all_labels.append(batch["label"])
+    model.train()
+    return dice_per_class(torch.cat(all_logits), torch.cat(all_labels))
+
+
+def run_projection(model, modality, device, proj_path):
+    print("  [Projection] Building feature bank on CPU…", flush=True)
+    t0 = time.time()
+    proj_ds = MMWHSSliceDataset(DATA_DIR, modality, "train", augment=False, preload=True)
+    proj_loader = torch.utils.data.DataLoader(proj_ds, batch_size=32, shuffle=False)
+    wrapped = [(b["image"], b["label"]) for b in proj_loader]
+
+    projector = PrototypeProjection(
+        encoder=model.encoder,
+        proto_layers=model.proto_layers_dict(),
+        device="cpu",
+    )
+    projector.project(wrapped, save_path=str(proj_path))
+
+    # Restore model to training device — PrototypeProjection.to('cpu') mutates
+    # the shared encoder/proto_layers in-place; move everything back.
+    model.to(device)
+
+    ckpt = torch.load(proj_path, weights_only=True)
+    for level, proto_data in ckpt["proto_state"].items():
+        model.proto_layers[str(level)].prototypes.data.copy_(proto_data)
+    print(f"  [Projection] Done in {time.time()-t0:.1f}s", flush=True)
+
+
+def set_phase(model, epoch, optimizer):
+    if epoch <= PHASE_A_END:
+        model.unfreeze_all()
+        model.freeze_prototypes()
+        phase = "A"
+    elif epoch <= PHASE_B_END:
+        model.unfreeze_all()
+        phase = "B"
+    else:
+        model.freeze_encoder_and_prototypes()
+        phase = "C"
+    # Refresh optimizer param groups
+    optimizer.param_groups[0]["params"] = [p for p in model.parameters() if p.requires_grad]
+    return phase
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def train(modality: str) -> None:
+    device = pick_device()
+    CKPT_DIR.mkdir(exist_ok=True)
+    RESULT_DIR.mkdir(exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"  Training ProtoSegNet — {modality.upper()}")
+    print(f"  Device: {device}  |  Batch: {BATCH_SIZE}  |  Max epochs: {MAX_EPOCHS}")
+    print(f"  λ_div={LAMBDA_DIV}  |  Projection every {PROJECTION_INTERVAL} epochs (Phase B)")
+    print(f"{'='*60}\n")
+
+    # Data
+    loaders = make_dataloaders(DATA_DIR, modality, batch_size=BATCH_SIZE)
+    print(f"  Train: {len(loaders['train'].dataset)} slices  "
+          f"Val: {len(loaders['val'].dataset)} slices  "
+          f"Test: {len(loaders['test'].dataset)} slices")
+
+    # Class weights
+    weights_path = ROOT / "data" / f"class_weights_{modality}.pt"
+    if weights_path.exists():
+        class_weights = torch.load(weights_path, weights_only=True)
+        print(f"  Loaded class weights from {weights_path.name}")
+    else:
+        print("  Computing class weights…")
+        class_weights = compute_class_weights(DATA_DIR, modality)
+        torch.save(class_weights, weights_path)
+
+    # Model + loss
+    model = ProtoSegNet(n_classes=NUM_CLASSES).to(device)
+    seg_loss = SegmentationLoss(class_weights=class_weights.to(device), n_classes=NUM_CLASSES)
+    criterion = ProtoSegLoss(seg_loss=seg_loss, lambda_div=LAMBDA_DIV)
+    total_params = model.count_parameters()["total"]
+    print(f"  Model params: {total_params:,}")
+
+    # Optimizer + scheduler
+    model.freeze_prototypes()
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=LR, weight_decay=WEIGHT_DECAY,
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS)
+
+    # Logging
+    log_path  = RESULT_DIR / f"train_curve_proto_{modality}.csv"
+    ckpt_path = CKPT_DIR   / f"proto_seg_{modality}.pth"
+    proj_path = CKPT_DIR   / f"projected_prototypes_{modality}.pt"
+
+    fieldnames = (
+        ["epoch", "phase", "train_loss", "train_dice_loss", "train_ce_loss",
+         "train_div_loss", "val_mean_fg_dice", "lr", "epoch_time_s"]
+        + [f"val_dice_{LABEL_NAMES[c]}" for c in range(1, NUM_CLASSES)]
+    )
+    csv_file = open(log_path, "w", newline="")
+    writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    writer.writeheader()
+
+    best_val_dice, best_epoch, no_improve = 0.0, 0, 0
+    current_phase = "A"
+    print(f"  Phase A: backbone + decoder; prototypes frozen (epochs 1–{PHASE_A_END})\n")
+
+    for epoch in range(1, MAX_EPOCHS + 1):
+
+        # Phase transitions
+        new_phase = set_phase(model, epoch, optimizer)
+        if new_phase != current_phase:
+            current_phase = new_phase
+            if current_phase == "B":
+                print(f"\n  → Phase B: all params; diversity loss active "
+                      f"(epochs {PHASE_A_END+1}–{PHASE_B_END})")
+                run_projection(model, modality, device, proj_path)
+                # Reset best so Phase B/C find their own best checkpoint
+                # (Phase A val Dice is not comparable once diversity loss is active)
+                best_val_dice, best_epoch, no_improve = 0.0, 0, 0
+            elif current_phase == "C":
+                print(f"\n  → Phase C: decoder fine-tuning only "
+                      f"(epochs {PHASE_B_END+1}–{PHASE_C_END})")
+
+        # Periodic projection in Phase B
+        if (current_phase == "B"
+                and epoch > PHASE_A_END + 1
+                and (epoch - PHASE_A_END) % PROJECTION_INTERVAL == 0):
+            run_projection(model, modality, device, proj_path)
+
+        # Train epoch
+        t0 = time.time()
+        model.train()
+        total_loss = total_dice = total_ce = total_div = 0.0
+        n_batches = 0
+
+        for batch in loaders["train"]:
+            imgs = batch["image"].to(device)
+            lbls = batch["label"].to(device)
+            optimizer.zero_grad()
+            logits, hm = model(imgs)
+
+            if current_phase == "A":
+                out = seg_loss(logits, lbls)
+                out["div_loss"] = torch.zeros(1, device=device)
+            else:
+                out = criterion(logits, lbls, hm)
+
+            out["loss"].backward()
+            nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad], 1.0
+            )
+            optimizer.step()
+
+            total_loss += out["loss"].item()
+            total_dice += out["dice_loss"].item()
+            total_ce   += out["ce_loss"].item()
+            total_div  += out["div_loss"].item()
+            n_batches  += 1
+
+        scheduler.step()
+        epoch_time = time.time() - t0
+        avg = lambda s: s / n_batches
+        current_lr = scheduler.get_last_lr()[0]
+
+        row = {
+            "epoch": epoch, "phase": current_phase,
+            "train_loss":      round(avg(total_loss), 5),
+            "train_dice_loss": round(avg(total_dice), 5),
+            "train_ce_loss":   round(avg(total_ce),   5),
+            "train_div_loss":  round(avg(total_div),  5),
+            "lr": round(current_lr, 7),
+            "epoch_time_s": round(epoch_time, 1),
+        }
+
+        # Validation
+        if epoch % VAL_EVERY == 0 or epoch == 1:
+            val_dice = validate_slices(model, loaders["val"], device)
+            val_mean = mean_foreground_dice(val_dice)
+            row["val_mean_fg_dice"] = round(val_mean, 5)
+            for c in range(1, NUM_CLASSES):
+                name = LABEL_NAMES[c]
+                v = val_dice.get(name, float("nan"))
+                row[f"val_dice_{name}"] = round(v, 4) if v == v else "nan"
+
+            if val_mean > best_val_dice:
+                best_val_dice, best_epoch, no_improve = val_mean, epoch, 0
+                torch.save({
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "best_val_dice": best_val_dice,
+                    "class_weights": class_weights,
+                    "lambda_div": LAMBDA_DIV,
+                }, ckpt_path)
+                flag = " ← best"
+            else:
+                no_improve += 1
+                flag = ""
+
+            print(f"  [{current_phase}] Ep {epoch:3d}/{MAX_EPOCHS} | "
+                  f"loss={avg(total_loss):.4f} "
+                  f"(D={avg(total_dice):.4f} CE={avg(total_ce):.4f} div={avg(total_div):.4f}) | "
+                  f"val={val_mean:.4f}{flag} | lr={current_lr:.2e} | {epoch_time:.1f}s",
+                  flush=True)
+        else:
+            row["val_mean_fg_dice"] = ""
+            for c in range(1, NUM_CLASSES):
+                row[f"val_dice_{LABEL_NAMES[c]}"] = ""
+            if epoch % 10 == 0:
+                print(f"  [{current_phase}] Ep {epoch:3d}/{MAX_EPOCHS} | "
+                      f"loss={avg(total_loss):.4f} | lr={current_lr:.2e} | {epoch_time:.1f}s",
+                      flush=True)
+
+        writer.writerow(row)
+        csv_file.flush()
+
+        if current_phase != "A" and no_improve >= PATIENCE:
+            print(f"\n  Early stopping at epoch {epoch} "
+                  f"(no improvement for {PATIENCE} val checks)")
+            break
+
+    csv_file.close()
+    print(f"\n  Best val mean fg Dice: {best_val_dice:.4f} at epoch {best_epoch}")
+    print(f"  Checkpoint : {ckpt_path}")
+    print(f"  Log        : {log_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train ProtoSegNet")
+    parser.add_argument("--modality", required=True, choices=["ct", "mr"])
+    args = parser.parse_args()
+    train(args.modality)
+
+
+if __name__ == "__main__":
+    main()
