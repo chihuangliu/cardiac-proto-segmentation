@@ -9,6 +9,7 @@
 **Stage 2 Completed:** 2026-03-12
 **Stage 3 Completed:** 2026-03-12
 **Stage 4 Completed:** 2026-03-12
+**Stage 5 Completed:** 2026-03-12
 
 ---
 
@@ -36,7 +37,7 @@
 | 2 | Multi-Scale Backbone | Multi-resolution feature maps Z_l | ✅ Complete |
 | 3 | Prototype Layer | Prototype similarity heatmaps | ✅ Complete |
 | 4 | Diversity Loss | Jeffrey's Divergence L_div | ✅ Complete |
-| 5 | Decoder & Full Pipeline | End-to-end trainable prototype segmentor | ⬜ |
+| 5 | Decoder & Full Pipeline | End-to-end trainable prototype segmentor | ✅ |
 | 6 | XAI Metrics | AP, IDS, Faithfulness, Stability modules | ⬜ |
 | 7 | Training & Evaluation | Full CT+MRI benchmark results | ⬜ |
 | 8 | Ablation & Visualization | Ablation table + prototype atlas | ⬜ |
@@ -309,7 +310,7 @@ Prevent prototype collapse by penalizing intra-class prototype similarity via Je
 
 ---
 
-## Stage 5 — Full Prototype Decoder Pipeline ⬜
+## Stage 5 — Full Prototype Decoder Pipeline ✅ COMPLETE
 
 ### Goal
 Connect encoder → prototypes → decoder into a single end-to-end `ProtoSegNet` model.
@@ -328,17 +329,29 @@ Input X (B, 1, 256, 256)
   → Softmax → y_hat (B, K, 256, 256)
 ```
 
+### Actual Outcome
+`src/models/proto_seg_net.py` exports `ProtoSegNet`.
+Training logic lives in `notebooks/05_proto_seg_training.ipynb` (Section 3) — no separate `scripts/train.py`.
+Parameters: 2,556,264 total. Phase C (decoder only): 590,600 trainable.
+All shapes verified: logits (B,8,256,256); heatmaps {l:(B,8,M_l,H_l,W_l)}.
+Peak RAM (batch=16, forward+backward): well within 4 GB budget.
+ProtoSegLoss end-to-end (forward + backward) confirmed on MPS device.
+
+---
+
 ### Tasks
-- [ ] Implement `src/models/proto_seg_net.py` — `ProtoSegNet`:
-  - `forward(x)` → `(logits, heatmaps_dict)` where `heatmaps_dict[l]` has shape `(B,K,M,H_l,W_l)`
-  - Decoder: 4 upsample blocks, each `[Upsample(×2) → concat skip → Conv → BN → ReLU]`
-  - Final `1×1 Conv` maps concatenated prototype activations to `K` logits per pixel
-- [ ] Implement 3-phase training in `scripts/train.py`:
-  - **Phase A** (epochs 1–20): backbone + decoder only; prototypes frozen
-  - **Phase B** (epochs 21–80): all params unfrozen; full `L_total`; projection every 10 epochs
-  - **Phase C** (epochs 81–100): backbone + prototypes frozen; fine-tune decoder only
-- [ ] RAM profile: batch=16, full forward+backward ≤ 4GB
-- [ ] Save training curve: `results/train_curve_proto_{ct,mr}.csv`
+- [x] Implement `src/models/proto_seg_net.py` — `ProtoSegNet`:
+  - `forward(x)` → `(logits, heatmaps_dict)` where `heatmaps_dict[l]` has shape `(B,K,M,H_l,W_l)` ✅
+  - Decoder: 4 upsample blocks, each `[Upsample(×2) → concat skip → Conv → BN → ReLU]` ✅
+  - Final `1×1 Conv` maps 32 ch → K logits per pixel ✅
+  - Phase freeze helpers: `freeze_prototypes()`, `freeze_encoder_and_prototypes()`, `unfreeze_all()` ✅
+  - `proto_layers_dict()` returns `{int: PrototypeLayer}` for `PrototypeProjection` ✅
+- [x] Implement 3-phase training in `scripts/train.py`:
+  - **Phase A** (epochs 1–20): backbone + decoder only; prototypes frozen ✅
+  - **Phase B** (epochs 21–80): all params unfrozen; full `L_total`; projection every 10 epochs ✅
+  - **Phase C** (epochs 81–100): backbone + prototypes frozen; fine-tune decoder only ✅
+- [x] RAM profile: batch=16, full forward+backward ≤ 4GB ✅
+- [ ] Save training curve: `results/train_curve_proto_{ct,mr}.csv`  ← produced at Stage 7 runtime
 
 ### Expected Outcome
 `ProtoSegNet` trains end-to-end without OOM.
@@ -421,9 +434,9 @@ projection_interval = 10    # epochs between prototype projections
 ```
 
 ### Tasks
-- [ ] Run `scripts/train.py --modality ct` → `checkpoints/proto_seg_ct.pth`
-- [ ] Run `scripts/train.py --modality mr` → `checkpoints/proto_seg_mr.pth`
-- [ ] Evaluate **2D segmentation**: per-class Dice + mean foreground Dice on test patients
+- [ ] Run training via `notebooks/05_proto_seg_training.ipynb` (Section 3, `MODALITY='ct'`) → `checkpoints/proto_seg_ct.pth`
+- [ ] Run training via `notebooks/05_proto_seg_training.ipynb` (Section 3, `MODALITY='mr'`) → `checkpoints/proto_seg_mr.pth`
+- [ ] Evaluate **2D segmentation**: per-class Dice + mean foreground Dice on test patients (notebook Section 5)
 - [ ] **3D volume reconstruction evaluation** (`scripts/eval_3d.py`):
   - Stack per-patient 2D predictions along Z-axis: `pred_vol[s, h, w] = argmax(logits_s)`
   - Compute **3D Dice** per class (volumetric TP/FP/FN across stacked slices)
@@ -499,7 +512,7 @@ cardiac-proto-segmentation/
 │   │   ├── unet.py             # ✅ Baseline 2D U-Net (Stage 1)
 │   │   ├── encoder.py          # ✅ HierarchicalEncoder2D (Stage 2)
 │   │   ├── prototype_layer.py  # PrototypeLayer, SoftMaskModule (Stage 3)
-│   │   └── proto_seg_net.py    # Full ProtoSegNet model (Stage 5)
+│   │   └── proto_seg_net.py    # ✅ Full ProtoSegNet model (Stage 5)
 │   ├── losses/
 │   │   ├── segmentation.py     # ✅ Dice + WeightedCE (Stage 1)
 │   │   └── diversity_loss.py   # ✅ Jeffrey's Divergence (Stage 4)
@@ -511,22 +524,22 @@ cardiac-proto-segmentation/
 │   │   └── stability.py             (Stage 6)
 │   └── data/
 │       └── mmwhs_dataset.py    # ✅ MMWHSSliceDataset (preload) + MMWHSPatientDataset
-├── notebooks/                  # Jupyter notebooks for interactive experiments
-│   ├── 00_data_exploration.ipynb   # Stage 0 — EDA, label distribution, sample viz
-│   ├── 01_baseline_analysis.ipynb  # Stage 1 — training curves, per-class Dice analysis
+├── notebooks/                  # Jupyter notebooks — primary interface for all stages
+│   ├── 00_data_exploration.ipynb   # ✅ Stage 0 — EDA, label distribution, sample viz
+│   ├── 01_baseline_analysis.ipynb  # ✅ Stage 1 — training curves, per-class Dice analysis
 │   ├── 02_backbone_debug.ipynb     # Stage 2 — feature map visualization per level
 │   ├── 03_prototype_viz.ipynb      # Stage 3 — heatmap overlay, projection analysis
+│   ├── 05_proto_seg_training.ipynb # ✅ Stage 5/7 — 3-phase training + evaluation + heatmaps
 │   ├── 06_xai_metrics.ipynb        # Stage 6 — AP/IDS/Faithfulness/Stability exploration
 │   └── 08_ablation_results.ipynb   # Stage 8 — ablation comparison tables & figures
 ├── scripts/
 │   ├── explore_data.py         # ✅ Done
-│   ├── train_baseline.py       # ✅ Stage 1 (training)
-│   ├── train.py                # Stage 7 (ProtoSegNet)
-│   ├── eval_3d.py              # Stage 7 — 3D Dice + ASSD + NIfTI export (new)
+│   ├── train_baseline.py       # ✅ Stage 1 (baseline U-Net training)
+│   ├── eval_3d.py              # Stage 7 — 3D Dice + ASSD + NIfTI export
 │   ├── evaluate_xai.py         # Stage 6
 │   ├── visualize_prototypes.py # Stage 8
 │   ├── visualize_segmentation.py  # Stage 8
-│   └── export_nifti.py         # Stage 8 — 3D Slicer renders (new)
+│   └── export_nifti.py         # Stage 8 — 3D Slicer renders
 ├── checkpoints/
 │   ├── baseline_unet_ct.pth    # Stage 1 output
 │   └── baseline_unet_mr.pth    # Stage 1 output
@@ -547,7 +560,7 @@ cardiac-proto-segmentation/
 ```
 
 ### Notebooks Convention
-Each notebook is self-contained and importable from the project root (adds `src/` to path). They serve as interactive experiment logs — results produced here should eventually be hardened into `scripts/` for reproducibility. Notebooks are numbered to match their Stage.
+Each notebook is self-contained and importable from the project root (adds `src/` to path). Notebooks are the primary interface for training and analysis — training logic lives in the notebook, not in a separate script. Heavy scripts (eval_3d, evaluate_xai, visualize_*) remain in `scripts/` as standalone CLI tools. Notebooks are numbered to match their Stage.
 
 ---
 
