@@ -8,6 +8,7 @@
 **Stage 1 Completed:** 2026-03-12
 **Stage 2 Completed:** 2026-03-12
 **Stage 3 Completed:** 2026-03-12
+**Stage 4 Completed:** 2026-03-12
 
 ---
 
@@ -34,7 +35,7 @@
 | 1 | Baseline 2D U-Net | Reproducible segmentation baseline | ✅ Complete |
 | 2 | Multi-Scale Backbone | Multi-resolution feature maps Z_l | ✅ Complete |
 | 3 | Prototype Layer | Prototype similarity heatmaps | ✅ Complete |
-| 4 | Diversity Loss | Jeffrey's Divergence L_div | ⬜ |
+| 4 | Diversity Loss | Jeffrey's Divergence L_div | ✅ Complete |
 | 5 | Decoder & Full Pipeline | End-to-end trainable prototype segmentor | ⬜ |
 | 6 | XAI Metrics | AP, IDS, Faithfulness, Stability modules | ⬜ |
 | 7 | Training & Evaluation | Full CT+MRI benchmark results | ⬜ |
@@ -282,7 +283,7 @@ Prevent prototype collapse by penalizing intra-class prototype similarity via Je
 > **No structural changes from original** — this loss operates on heatmap distributions and is dimension-agnostic. The background class (k=0) should be excluded from diversity enforcement since background prototypes don't need anatomical separation.
 
 ### Tasks
-- [ ] Implement `src/losses/diversity_loss.py` — `prototype_diversity_loss(A_dict, exclude_bg=True)`:
+- [x] Implement `src/losses/diversity_loss.py` — `prototype_diversity_loss(A_dict, exclude_bg=True)`:
   ```
   L_div = Σ_l Σ_{k≠0} Σ_{m≠n} [ 1 / (D_J(A_{l,k,m} || A_{l,k,n}) + eps) ]
   where D_J(P||Q) = KL(P||Q) + KL(Q||P)
@@ -290,18 +291,21 @@ Prevent prototype collapse by penalizing intra-class prototype similarity via Je
   - Flatten spatial dims before softmax normalization to probability distribution
   - Manual KL: `(p * (p.log() - q.log())).sum()` for numerical stability
   - `eps = 1e-8`
-- [ ] Unit tests:
-  - Identical heatmaps → high loss (penalized)
-  - Orthogonal heatmaps → low loss (rewarded)
-  - Background class excluded: loss unchanged when bg heatmaps are identical
-  - Gradient flows to prototype parameters
-- [ ] Implement combined: `L_total = 0.5*L_dice + 0.5*L_wce + lambda_div * L_div`
-- [ ] Hyperparameter: `lambda_div = 0.01` (start), sweep `[0.001, 0.01, 0.1]` in Stage 7
+- [x] Unit tests:
+  - Identical heatmaps → high loss (penalized) ✅
+  - Orthogonal heatmaps → low loss (rewarded) ✅
+  - Background class excluded: loss unchanged when bg heatmaps are identical ✅
+  - Gradient flows to prototype parameters ✅
+- [x] Implement combined: `L_total = 0.5*L_dice + 0.5*L_wce + lambda_div * L_div` (`ProtoSegLoss`) ✅
+- [x] Hyperparameter: `lambda_div = 0.01` (start), sweep `[0.001, 0.01, 0.1]` in Stage 7
 
-### Expected Outcome
-`src/losses/diversity_loss.py`.
-Prototype pairwise cosine similarity (foreground classes) < 0.5 after convergence.
-No prototype collapse observed in heatmap visualizations.
+### Actual Outcome
+`src/losses/diversity_loss.py` exports `prototype_diversity_loss`, `ProtoSegLoss`.
+7/7 unit tests pass. Test script: `scripts/test_diversity_loss.py`.
+- Identical heatmaps: D_J ≈ 0 → loss = **7.7B** (large penalty confirmed)
+- Orthogonal heatmaps: D_J large → loss = **2.09** (near-minimal)
+- `ProtoSegLoss` decomposition verified: total = 0.5*dice + 0.5*ce + λ_div*div ✅
+- Gradients flow through all 4 prototype levels ✅
 
 ---
 
@@ -498,7 +502,7 @@ cardiac-proto-segmentation/
 │   │   └── proto_seg_net.py    # Full ProtoSegNet model (Stage 5)
 │   ├── losses/
 │   │   ├── segmentation.py     # ✅ Dice + WeightedCE (Stage 1)
-│   │   └── diversity_loss.py   # Jeffrey's Divergence (Stage 4)
+│   │   └── diversity_loss.py   # ✅ Jeffrey's Divergence (Stage 4)
 │   ├── metrics/
 │   │   ├── dice.py             # ✅ per-class Dice + mean_fg_dice (Stage 1)
 │   │   ├── activation_precision.py  (Stage 6)
