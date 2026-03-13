@@ -1,10 +1,20 @@
 """
 src/models/prototype_layer.py
 Stage 3 — Prototype Layer
+Stage 8 — L2 distance similarity (replaces log-cosine)
 
-PrototypeLayer       : learnable K×M prototype matrices + log-cosine similarity heatmaps
+PrototypeLayer       : learnable K×M prototype matrices + L2 similarity heatmaps
 SoftMaskModule       : aggregate per-class heatmap → spatial attention mask on Z_l
 PrototypeProjection  : push each prototype to the nearest real training feature vector
+
+Similarity (Stage 8):
+    sim(z, p) = 1 / (||z - p||² / C + 1)   ∈ (0, 1]
+
+    where C = feature_dim normalises the distance to be scale-invariant across levels.
+    sim = 1.0 when z = p (perfect match).
+    sim → 0 as ||z - p||² → ∞.
+    Sharp spatial falloff: background features far from the prototype → sim ≈ 0.
+    Contrast with log-cosine which saturated near log(2) everywhere (poor localisation).
 """
 
 import os
@@ -28,9 +38,12 @@ class PrototypeLayer(nn.Module):
     Learnable prototype layer for one encoder level l.
 
     Stores K × M prototype vectors  p_{k,m} ∈ ℝ^C.
-    Computes log-cosine-similarity heatmaps between Z_l and every prototype.
+    Computes L2-distance similarity heatmaps between Z_l and every prototype.
 
-    Similarity:  S = log( clamp(cos_sim, 0, 1) + 1 )  →  range [0, log 2]
+    Similarity:  S = 1 / ( ||z - p||² / C + 1 )   →  range (0, 1]
+        S = 1.0 when z = p (exact match).
+        S → 0 as z diverges from p (sharp spatial falloff).
+        Division by C makes the range level-invariant across encoder depths.
 
     Args
     ----
@@ -39,7 +52,7 @@ class PrototypeLayer(nn.Module):
     feature_dim C : channel depth of the input feature map Z_l
 
     Input  : Z_l  (B, C, H, W)
-    Output : A    (B, K, M, H, W)   log-similarity heatmap
+    Output : A    (B, K, M, H, W)   L2-similarity heatmap  ∈ (0, 1]
     """
 
     def __init__(self, n_classes: int, n_protos: int, feature_dim: int):
@@ -58,24 +71,26 @@ class PrototypeLayer(nn.Module):
             f"feature_dim mismatch: expected {self.feature_dim}, got {C}"
         )
 
-        # Flatten spatial and L2-normalise along C  →  (B, H*W, C)
-        z_flat = Z_l.permute(0, 2, 3, 1).reshape(B, H * W, C)
-        z_norm = F.normalize(z_flat, p=2, dim=-1)  # (B, HW, C)
+        # Flatten spatial  →  (B, H*W, C)
+        z_flat = Z_l.permute(0, 2, 3, 1).reshape(B, H * W, C)  # (B, HW, C)
 
-        # L2-normalise prototypes  →  (K*M, C)
-        p_flat = self.prototypes.reshape(K * M, C)
-        p_norm = F.normalize(p_flat, p=2, dim=-1)  # (KM, C)
+        # Prototype bank  →  (K*M, C)
+        p_flat = self.prototypes.reshape(K * M, C)  # (KM, C)
 
-        # Batched cosine similarity via einsum  →  (B, HW, KM)
-        cos_sim = torch.einsum("bnc,kc->bnk", z_norm, p_norm)
+        # Squared L2 distance  ||z - p||²  for every (z, p) pair  →  (B, HW, KM)
+        # Expanded via: ||z-p||² = ||z||² + ||p||² - 2·z·p
+        z_sq = (z_flat ** 2).sum(dim=-1, keepdim=True)          # (B, HW, 1)
+        p_sq = (p_flat ** 2).sum(dim=-1).unsqueeze(0).unsqueeze(0)  # (1, 1, KM)
+        zp   = torch.einsum("bnc,kc->bnk", z_flat, p_flat)      # (B, HW, KM)
+        dist_sq = (z_sq + p_sq - 2.0 * zp).clamp(min=0.0)      # (B, HW, KM)
 
-        # Log similarity:  log(clamp(cos_sim, 0, 1) + 1)  →  [0, log 2]
-        sim_log = torch.log(cos_sim.clamp(0.0, 1.0) + 1.0)  # (B, HW, KM)
+        # L2 similarity: 1 / (normalised_dist² + 1)  →  (0, 1]
+        sim = 1.0 / (dist_sq / C + 1.0)  # (B, HW, KM)
 
         # Reshape to  (B, K, M, H, W)
-        sim_log = sim_log.reshape(B, H, W, K, M)
-        sim_log = sim_log.permute(0, 3, 4, 1, 2).contiguous()  # (B, K, M, H, W)
-        return sim_log
+        sim = sim.reshape(B, H, W, K, M)
+        sim = sim.permute(0, 3, 4, 1, 2).contiguous()  # (B, K, M, H, W)
+        return sim
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +141,9 @@ class PrototypeProjection:
 
     Saves: ``checkpoints/projected_prototypes.pt``
     Runtime target: < 2 min on CPU (2D feature bank is small).
+
+    Nearest-neighbour search uses L2 distance (consistent with the L2 similarity
+    used in PrototypeLayer.forward).
 
     Args
     ----
@@ -207,15 +225,14 @@ class PrototypeProjection:
             feat_bank[level] = torch.cat(feat_bank[level], dim=0)  # (N, C)
             lbl_bank[level] = torch.cat(lbl_bank[level], dim=0)  # (N,)
 
-        # ── Pass 2: per-prototype nearest-neighbour search ─────────────────
+        # ── Pass 2: per-prototype nearest-neighbour search (L2 distance) ──
         metadata: dict = {}
 
         for level, pl in self.proto_layers.items():
             K, M, C = pl.n_classes, pl.n_protos, pl.feature_dim
 
             bank_raw = feat_bank[level].to(device)  # (N, C)
-            bank_norm = F.normalize(bank_raw, p=2, dim=-1)  # (N, C)
-            lbls = lbl_bank[level].to(device)  # (N,)
+            lbls = lbl_bank[level].to(device)        # (N,)
 
             for k in range(K):
                 class_mask = lbls == k  # (N,) bool
@@ -224,20 +241,18 @@ class PrototypeProjection:
                     # No training positions for this class — leave prototype unchanged
                     continue
 
-                bank_k_norm = bank_norm[class_mask]  # (N_k, C)
+                bank_k = bank_raw[class_mask]  # (N_k, C)
                 orig_indices = class_mask.nonzero(as_tuple=True)[0]  # (N_k,)
 
                 for m in range(M):
-                    p_norm = F.normalize(
-                        pl.prototypes[k, m].unsqueeze(0), p=2, dim=-1
-                    )  # (1, C)
+                    p_vec = pl.prototypes[k, m].unsqueeze(0)  # (1, C)
 
-                    # Cosine similarity with class-filtered bank  →  (N_k,)
-                    sims = (bank_k_norm @ p_norm.T).squeeze(-1)
-                    best_local = sims.argmax().item()
+                    # Squared L2 distance with class-filtered bank  →  (N_k,)
+                    dists_sq = ((bank_k - p_vec) ** 2).sum(dim=-1)
+                    best_local = dists_sq.argmin().item()
                     best_global = orig_indices[best_local].item()
 
-                    # Replace prototype with the real feature vector (un-normalised)
+                    # Replace prototype with the nearest real feature vector
                     pl.prototypes.data[k, m] = bank_raw[best_global]
                     metadata[(level, k, m)] = {"feat_idx": int(best_global)}
 

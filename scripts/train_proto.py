@@ -2,15 +2,17 @@
 """
 scripts/train_proto.py
 Stage 7 — ProtoSegNet Training
+Stage 8 — Push-Pull XAI Fix (--lambda-push / --lambda-pull)
 
 3-phase training schedule:
   Phase A (ep 1–20):   backbone + decoder; prototypes frozen
-  Phase B (ep 21–80):  all params; diversity loss; projection every 10 ep
+  Phase B (ep 21–80):  all params; diversity + push-pull loss; projection every 10 ep
   Phase C (ep 81–100): decoder fine-tuning only
 
 Usage:
     python scripts/train_proto.py --modality ct
     python scripts/train_proto.py --modality mr
+    python scripts/train_proto.py --modality ct --lambda-push 0.1 --lambda-pull 0.05 --suffix _pp
 """
 
 import argparse
@@ -50,7 +52,9 @@ RESULT_DIR  = ROOT / "results"
 BATCH_SIZE          = 16
 LR                  = 3e-4
 WEIGHT_DECAY        = 1e-5
-LAMBDA_DIV          = 0.01
+LAMBDA_DIV          = 0.01  # override via --lambda-div
+LAMBDA_PUSH         = 0.0   # override via --lambda-push
+LAMBDA_PULL         = 0.0   # override via --lambda-pull
 PHASE_A_END         = 20
 PHASE_B_END         = 80
 PHASE_C_END         = 100
@@ -124,15 +128,16 @@ def set_phase(model, epoch, optimizer):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def train(modality: str) -> None:
+def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LAMBDA_PUSH, lambda_pull: float = LAMBDA_PULL, suffix: str = "", start_epoch: int = 1, init_checkpoint: str = "") -> None:
     device = pick_device()
     CKPT_DIR.mkdir(exist_ok=True)
     RESULT_DIR.mkdir(exist_ok=True)
 
     print(f"\n{'='*60}")
-    print(f"  Training ProtoSegNet — {modality.upper()}")
+    print(f"  Training ProtoSegNet — {modality.upper()}  (suffix='{suffix}')")
     print(f"  Device: {device}  |  Batch: {BATCH_SIZE}  |  Max epochs: {MAX_EPOCHS}")
-    print(f"  λ_div={LAMBDA_DIV}  |  Projection every {PROJECTION_INTERVAL} epochs (Phase B)")
+    print(f"  λ_div={lambda_div}  λ_push={lambda_push}  λ_pull={lambda_pull}")
+    print(f"  Projection every {PROJECTION_INTERVAL} epochs (Phase B)")
     print(f"{'='*60}\n")
 
     # Data
@@ -153,8 +158,17 @@ def train(modality: str) -> None:
 
     # Model + loss
     model = ProtoSegNet(n_classes=NUM_CLASSES).to(device)
+    if init_checkpoint:
+        ckpt = torch.load(init_checkpoint, map_location=device, weights_only=True)
+        model.load_state_dict(ckpt["model_state_dict"])
+        print(f"  Loaded weights from {init_checkpoint}  (was ep {ckpt['epoch']}, val {ckpt['best_val_dice']:.4f})")
     seg_loss = SegmentationLoss(class_weights=class_weights.to(device), n_classes=NUM_CLASSES)
-    criterion = ProtoSegLoss(seg_loss=seg_loss, lambda_div=LAMBDA_DIV)
+    criterion = ProtoSegLoss(
+        seg_loss=seg_loss,
+        lambda_div=lambda_div,
+        lambda_push=lambda_push,
+        lambda_pull=lambda_pull,
+    )
     total_params = model.count_parameters()["total"]
     print(f"  Model params: {total_params:,}")
 
@@ -167,24 +181,31 @@ def train(modality: str) -> None:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS)
 
     # Logging
-    log_path  = RESULT_DIR / f"train_curve_proto_{modality}.csv"
-    ckpt_path = CKPT_DIR   / f"proto_seg_{modality}.pth"
+    log_path  = RESULT_DIR / f"train_curve_proto_{modality}{suffix}.csv"
+    ckpt_path = CKPT_DIR   / f"proto_seg_{modality}{suffix}.pth"
     proj_path = CKPT_DIR   / f"projected_prototypes_{modality}.pt"
 
     fieldnames = (
         ["epoch", "phase", "train_loss", "train_dice_loss", "train_ce_loss",
-         "train_div_loss", "val_mean_fg_dice", "lr", "epoch_time_s"]
+         "train_div_loss", "train_push_loss", "train_pull_loss",
+         "val_mean_fg_dice", "lr", "epoch_time_s"]
         + [f"val_dice_{LABEL_NAMES[c]}" for c in range(1, NUM_CLASSES)]
     )
-    csv_file = open(log_path, "w", newline="")
+    # Append if resuming mid-run, otherwise start fresh
+    csv_mode = "a" if start_epoch > 1 else "w"
+    csv_file = open(log_path, csv_mode, newline="")
     writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-    writer.writeheader()
+    if csv_mode == "w":
+        writer.writeheader()
 
     best_val_dice, best_epoch, no_improve = 0.0, 0, 0
     current_phase = "A"
-    print(f"  Phase A: backbone + decoder; prototypes frozen (epochs 1–{PHASE_A_END})\n")
+    if start_epoch == 1:
+        print(f"  Phase A: backbone + decoder; prototypes frozen (epochs 1–{PHASE_A_END})\n")
+    else:
+        print(f"  Resuming from epoch {start_epoch}\n")
 
-    for epoch in range(1, MAX_EPOCHS + 1):
+    for epoch in range(start_epoch, MAX_EPOCHS + 1):
 
         # Phase transitions
         new_phase = set_phase(model, epoch, optimizer)
@@ -210,7 +231,7 @@ def train(modality: str) -> None:
         # Train epoch
         t0 = time.time()
         model.train()
-        total_loss = total_dice = total_ce = total_div = 0.0
+        total_loss = total_dice = total_ce = total_div = total_push = total_pull = 0.0
         n_batches = 0
 
         for batch in loaders["train"]:
@@ -221,7 +242,9 @@ def train(modality: str) -> None:
 
             if current_phase == "A":
                 out = seg_loss(logits, lbls)
-                out["div_loss"] = torch.zeros(1, device=device)
+                out["div_loss"]  = torch.zeros(1, device=device)
+                out["push_loss"] = torch.zeros(1, device=device)
+                out["pull_loss"] = torch.zeros(1, device=device)
             else:
                 out = criterion(logits, lbls, hm)
 
@@ -235,6 +258,8 @@ def train(modality: str) -> None:
             total_dice += out["dice_loss"].item()
             total_ce   += out["ce_loss"].item()
             total_div  += out["div_loss"].item()
+            total_push += out["push_loss"].item()
+            total_pull += out["pull_loss"].item()
             n_batches  += 1
 
         scheduler.step()
@@ -248,6 +273,8 @@ def train(modality: str) -> None:
             "train_dice_loss": round(avg(total_dice), 5),
             "train_ce_loss":   round(avg(total_ce),   5),
             "train_div_loss":  round(avg(total_div),  5),
+            "train_push_loss": round(avg(total_push), 6),
+            "train_pull_loss": round(avg(total_pull), 6),
             "lr": round(current_lr, 7),
             "epoch_time_s": round(epoch_time, 1),
         }
@@ -267,19 +294,22 @@ def train(modality: str) -> None:
                 torch.save({
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
                     "best_val_dice": best_val_dice,
                     "class_weights": class_weights,
-                    "lambda_div": LAMBDA_DIV,
+                    "lambda_div": lambda_div,
+                    "lambda_push": lambda_push,
+                    "lambda_pull": lambda_pull,
                 }, ckpt_path)
                 flag = " ← best"
             else:
                 no_improve += 1
                 flag = ""
 
+            pp_str = (f" push={avg(total_push):.4f} pull={avg(total_pull):.4f}"
+                      if lambda_push > 0 or lambda_pull > 0 else "")
             print(f"  [{current_phase}] Ep {epoch:3d}/{MAX_EPOCHS} | "
                   f"loss={avg(total_loss):.4f} "
-                  f"(D={avg(total_dice):.4f} CE={avg(total_ce):.4f} div={avg(total_div):.4f}) | "
+                  f"(D={avg(total_dice):.4f} CE={avg(total_ce):.4f} div={avg(total_div):.4f}{pp_str}) | "
                   f"val={val_mean:.4f}{flag} | lr={current_lr:.2e} | {epoch_time:.1f}s",
                   flush=True)
         else:
@@ -308,8 +338,22 @@ def train(modality: str) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Train ProtoSegNet")
     parser.add_argument("--modality", required=True, choices=["ct", "mr"])
+    parser.add_argument("--lambda-div",  type=float, default=LAMBDA_DIV,
+                        help="Weight on diversity loss (default 0.01)")
+    parser.add_argument("--lambda-push", type=float, default=LAMBDA_PUSH,
+                        help="Weight on push alignment loss (default 0.0 = off)")
+    parser.add_argument("--lambda-pull", type=float, default=LAMBDA_PULL,
+                        help="Weight on pull alignment loss (default 0.0 = off)")
+    parser.add_argument("--suffix", type=str, default="",
+                        help="Suffix appended to checkpoint and log filenames (e.g. _pp)")
+    parser.add_argument("--start-epoch", type=int, default=1,
+                        help="Resume training from this epoch (skips earlier phases)")
+    parser.add_argument("--init-checkpoint", type=str, default="",
+                        help="Load model weights from this checkpoint before training")
     args = parser.parse_args()
-    train(args.modality)
+    train(args.modality, lambda_div=args.lambda_div, lambda_push=args.lambda_push,
+          lambda_pull=args.lambda_pull, suffix=args.suffix,
+          start_epoch=args.start_epoch, init_checkpoint=args.init_checkpoint)
 
 
 if __name__ == "__main__":

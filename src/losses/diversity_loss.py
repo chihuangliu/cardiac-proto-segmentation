@@ -1,6 +1,7 @@
 """
 src/losses/diversity_loss.py
 Stage 4 — Diversity Loss (Jeffrey's Divergence)
+Stage 8 — Push-Pull Prototype Alignment Loss
 
 Penalizes intra-class prototype similarity to prevent prototype collapse.
 
@@ -10,8 +11,12 @@ Jeffrey's divergence (symmetric KL):
 Loss across all encoder levels and foreground classes:
     L_div = Σ_l Σ_{k≠0} Σ_{m≠n} [ 1 / (D_J(A_{l,k,m} || A_{l,k,n}) + eps) ]
 
+Push-pull prototype alignment:
+    L_push = -mean_{fg pixels of class k} max_m A_{l,k,m}   (push activation up over GT)
+    L_pull = +mean_{bg pixels of class k} max_m A_{l,k,m}   (pull activation down elsewhere)
+
 Combined training loss (for ProtoSegNet):
-    L_total = 0.5 * L_dice + 0.5 * L_wce + lambda_div * L_div
+    L_total = 0.5*L_dice + 0.5*L_wce + lambda_div*L_div + lambda_push*L_push + lambda_pull*L_pull
 """
 
 import torch
@@ -107,23 +112,109 @@ def _first_device(A_dict: dict) -> torch.device:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Stage 8 — Push-pull prototype alignment loss
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def prototype_push_pull_loss(
+    A_dict: dict[int, torch.Tensor],
+    labels: torch.Tensor,
+    exclude_bg: bool = True,
+    eps: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Push-pull prototype alignment loss.
+
+    For each level l and foreground class k:
+        act_{l,k} = max_m A_{l,k,m}  upsampled to input resolution
+        L_push += -mean(act_{l,k} over GT foreground pixels of class k)
+        L_pull += +mean(act_{l,k} over GT background pixels of class k)
+
+    Minimising L_push drives heatmaps to activate strongly over the GT region.
+    Minimising L_pull drives heatmaps to suppress activation elsewhere.
+
+    Args:
+        A_dict     : {level: (B, K, M, H_l, W_l)} prototype heatmaps
+        labels     : (B, H, W) integer GT class labels
+        exclude_bg : if True, skip class k=0
+        eps        : guard against empty foreground/background
+
+    Returns:
+        (push_loss, pull_loss) — both scalar tensors, each already averaged over
+        the number of (level, class) terms.
+    """
+    device = labels.device
+    B, H_in, W_in = labels.shape
+    K = next(iter(A_dict.values())).shape[1]
+    k_start = 1 if exclude_bg else 0
+
+    push_total = torch.zeros(1, device=device)
+    pull_total = torch.zeros(1, device=device)
+    n_terms = 0
+
+    for A in A_dict.values():
+        # A: (B, K, M, H_l, W_l)
+        # Max over prototype dim → (B, K, H_l, W_l)
+        act, _ = A.max(dim=2)
+        # Upsample to input resolution
+        act_up = F.interpolate(
+            act, size=(H_in, W_in), mode="bilinear", align_corners=False
+        )  # (B, K, H_in, W_in)
+
+        for k in range(k_start, K):
+            fg = (labels == k).float()   # (B, H_in, W_in)
+            bg = 1.0 - fg
+            fg_count = fg.sum() + eps
+            bg_count = bg.sum() + eps
+
+            act_k = act_up[:, k, :, :]  # (B, H_in, W_in)
+
+            # Push: minimise → increase activation over fg (loss is negative)
+            push_total = push_total - (act_k * fg).sum() / fg_count
+            # Pull: minimise → decrease activation over bg (loss is positive)
+            pull_total = pull_total + (act_k * bg).sum() / bg_count
+            n_terms += 1
+
+    if n_terms > 0:
+        push_total = push_total / n_terms
+        pull_total = pull_total / n_terms
+
+    return push_total.squeeze(), pull_total.squeeze()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Combined loss for ProtoSegNet training
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class ProtoSegLoss:
     """
-    Combined loss:  L_total = 0.5 * L_dice + 0.5 * L_wce + lambda_div * L_div
+    Combined loss:
+        L_total = 0.5*L_dice + 0.5*L_wce
+                + lambda_div  * L_div
+                + lambda_push * L_push
+                + lambda_pull * L_pull
 
     Args:
-        seg_loss   : SegmentationLoss instance (Dice + WeightedCE)
-        lambda_div : weight on diversity loss (default 0.01; sweep [0.001, 0.01, 0.1])
-        exclude_bg : exclude background class from diversity penalty
+        seg_loss     : SegmentationLoss instance (Dice + WeightedCE)
+        lambda_div   : weight on diversity loss (default 0.01)
+        lambda_push  : weight on push alignment loss (default 0.0 = off)
+        lambda_pull  : weight on pull alignment loss (default 0.0 = off)
+        exclude_bg   : exclude background class from diversity and push-pull
     """
 
-    def __init__(self, seg_loss, lambda_div: float = 0.01, exclude_bg: bool = True):
+    def __init__(
+        self,
+        seg_loss,
+        lambda_div: float = 0.01,
+        lambda_push: float = 0.0,
+        lambda_pull: float = 0.0,
+        exclude_bg: bool = True,
+    ):
         self.seg_loss = seg_loss
         self.lambda_div = lambda_div
+        self.lambda_push = lambda_push
+        self.lambda_pull = lambda_pull
         self.exclude_bg = exclude_bg
 
     def __call__(
@@ -139,14 +230,25 @@ class ProtoSegLoss:
             A_dict  : {level: (B, K, M, H_l, W_l)} prototype heatmaps
 
         Returns:
-            dict with keys: 'loss', 'dice_loss', 'ce_loss', 'div_loss'
+            dict with keys: 'loss', 'dice_loss', 'ce_loss', 'div_loss',
+                            'push_loss', 'pull_loss'
         """
         seg_out = self.seg_loss(logits, labels)
         div_loss = prototype_diversity_loss(A_dict, exclude_bg=self.exclude_bg)
-        total = seg_out["loss"] + self.lambda_div * div_loss
+        push_loss, pull_loss = prototype_push_pull_loss(
+            A_dict, labels, exclude_bg=self.exclude_bg
+        )
+        total = (
+            seg_out["loss"]
+            + self.lambda_div  * div_loss
+            + self.lambda_push * push_loss
+            + self.lambda_pull * pull_loss
+        )
         return {
             "loss": total,
             "dice_loss": seg_out["dice_loss"],
             "ce_loss": seg_out["ce_loss"],
             "div_loss": div_loss,
+            "push_loss": push_loss,
+            "pull_loss": pull_loss,
         }
