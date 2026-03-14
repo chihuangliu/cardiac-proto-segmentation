@@ -58,7 +58,7 @@ LAMBDA_PULL         = 0.0   # override via --lambda-pull
 PHASE_A_END         = 20
 PHASE_B_END         = 80
 PHASE_C_END         = 100
-MAX_EPOCHS          = PHASE_C_END
+MAX_EPOCHS          = PHASE_C_END  # override via --max-epochs
 VAL_EVERY           = 5
 PATIENCE            = 15
 PROJECTION_INTERVAL = 10
@@ -110,12 +110,12 @@ def run_projection(model, modality, device, proj_path):
     print(f"  [Projection] Done in {time.time()-t0:.1f}s", flush=True)
 
 
-def set_phase(model, epoch, optimizer):
+def set_phase(model, epoch, optimizer, phase_b_end=PHASE_B_END):
     if epoch <= PHASE_A_END:
         model.unfreeze_all()
         model.freeze_prototypes()
         phase = "A"
-    elif epoch <= PHASE_B_END:
+    elif epoch <= phase_b_end:
         model.unfreeze_all()
         phase = "B"
     else:
@@ -128,15 +128,22 @@ def set_phase(model, epoch, optimizer):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LAMBDA_PUSH, lambda_pull: float = LAMBDA_PULL, suffix: str = "", start_epoch: int = 1, init_checkpoint: str = "") -> None:
+def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LAMBDA_PUSH,
+          lambda_pull: float = LAMBDA_PULL, suffix: str = "", start_epoch: int = 1,
+          init_checkpoint: str = "", max_epochs: int = MAX_EPOCHS,
+          single_scale: bool = False, no_soft_mask: bool = False) -> None:
     device = pick_device()
     CKPT_DIR.mkdir(exist_ok=True)
     RESULT_DIR.mkdir(exist_ok=True)
 
+    phase_b_end = min(PHASE_B_END, max_epochs)
+    phase_c_end = max_epochs
+
     print(f"\n{'='*60}")
     print(f"  Training ProtoSegNet — {modality.upper()}  (suffix='{suffix}')")
-    print(f"  Device: {device}  |  Batch: {BATCH_SIZE}  |  Max epochs: {MAX_EPOCHS}")
+    print(f"  Device: {device}  |  Batch: {BATCH_SIZE}  |  Max epochs: {max_epochs}")
     print(f"  λ_div={lambda_div}  λ_push={lambda_push}  λ_pull={lambda_pull}")
+    print(f"  single_scale={single_scale}  no_soft_mask={no_soft_mask}")
     print(f"  Projection every {PROJECTION_INTERVAL} epochs (Phase B)")
     print(f"{'='*60}\n")
 
@@ -157,7 +164,9 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
         torch.save(class_weights, weights_path)
 
     # Model + loss
-    model = ProtoSegNet(n_classes=NUM_CLASSES).to(device)
+    model = ProtoSegNet(n_classes=NUM_CLASSES,
+                        single_scale=single_scale,
+                        no_soft_mask=no_soft_mask).to(device)
     if init_checkpoint:
         ckpt = torch.load(init_checkpoint, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"])
@@ -178,7 +187,7 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
         [p for p in model.parameters() if p.requires_grad],
         lr=LR, weight_decay=WEIGHT_DECAY,
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
 
     # Logging
     log_path  = RESULT_DIR / f"train_curve_proto_{modality}{suffix}.csv"
@@ -205,22 +214,22 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
     else:
         print(f"  Resuming from epoch {start_epoch}\n")
 
-    for epoch in range(start_epoch, MAX_EPOCHS + 1):
+    for epoch in range(start_epoch, max_epochs + 1):
 
         # Phase transitions
-        new_phase = set_phase(model, epoch, optimizer)
+        new_phase = set_phase(model, epoch, optimizer, phase_b_end)
         if new_phase != current_phase:
             current_phase = new_phase
             if current_phase == "B":
                 print(f"\n  → Phase B: all params; diversity loss active "
-                      f"(epochs {PHASE_A_END+1}–{PHASE_B_END})")
+                      f"(epochs {PHASE_A_END+1}–{phase_b_end})")
                 run_projection(model, modality, device, proj_path)
                 # Reset best so Phase B/C find their own best checkpoint
                 # (Phase A val Dice is not comparable once diversity loss is active)
                 best_val_dice, best_epoch, no_improve = 0.0, 0, 0
             elif current_phase == "C":
                 print(f"\n  → Phase C: decoder fine-tuning only "
-                      f"(epochs {PHASE_B_END+1}–{PHASE_C_END})")
+                      f"(epochs {phase_b_end+1}–{phase_c_end})")
 
         # Periodic projection in Phase B
         if (current_phase == "B"
@@ -299,6 +308,8 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
                     "lambda_div": lambda_div,
                     "lambda_push": lambda_push,
                     "lambda_pull": lambda_pull,
+                    "single_scale": single_scale,
+                    "no_soft_mask": no_soft_mask,
                 }, ckpt_path)
                 flag = " ← best"
             else:
@@ -350,10 +361,18 @@ def main():
                         help="Resume training from this epoch (skips earlier phases)")
     parser.add_argument("--init-checkpoint", type=str, default="",
                         help="Load model weights from this checkpoint before training")
+    parser.add_argument("--max-epochs", type=int, default=MAX_EPOCHS,
+                        help=f"Total epochs to train (default {MAX_EPOCHS}; use 50 for ablations)")
+    parser.add_argument("--single-scale", action="store_true",
+                        help="Ablation: use only level-4 prototypes (no multi-scale)")
+    parser.add_argument("--no-soft-mask", action="store_true",
+                        help="Ablation: skip SoftMaskModule; raw encoder features to decoder")
     args = parser.parse_args()
     train(args.modality, lambda_div=args.lambda_div, lambda_push=args.lambda_push,
           lambda_pull=args.lambda_pull, suffix=args.suffix,
-          start_epoch=args.start_epoch, init_checkpoint=args.init_checkpoint)
+          start_epoch=args.start_epoch, init_checkpoint=args.init_checkpoint,
+          max_epochs=args.max_epochs, single_scale=args.single_scale,
+          no_soft_mask=args.no_soft_mask)
 
 
 if __name__ == "__main__":

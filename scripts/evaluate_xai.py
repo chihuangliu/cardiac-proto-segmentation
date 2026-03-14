@@ -140,8 +140,12 @@ def main() -> None:
     print(f"Checkpoint: {args.checkpoint}")
 
     # ── Load model ────────────────────────────────────────────────────────────
-    model = ProtoSegNet(n_classes=N_CLASSES).to(device)
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    model = ProtoSegNet(
+        n_classes=N_CLASSES,
+        single_scale=ckpt.get("single_scale", False),
+        no_soft_mask=ckpt.get("no_soft_mask", False),
+    ).to(device)
     state = (ckpt.get("model_state_dict")
              or ckpt.get("model_state")
              or ckpt)

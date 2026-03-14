@@ -56,6 +56,10 @@ class ProtoSegNet(nn.Module):
     Encoder channels  : {1: 32, 2: 64, 3: 128, 4: 256}
     Prototype counts  : {l1: 4, l2: 3, l3: 2, l4: 2} per class
 
+    Ablation flags:
+        single_scale : only level-4 prototypes; levels 1-3 skip prototype & soft-mask
+        no_soft_mask : bypass SoftMaskModule; raw encoder features fed to decoder
+
     Decoder (deep → shallow):
         masked_Z4  (B, 256, 16,  16)  ─→  DecoderBlock(256+128, 128)  →  (B, 128, 32, 32)
         masked_Z3  (B, 128, 32,  32)  ─┘
@@ -71,19 +75,24 @@ class ProtoSegNet(nn.Module):
         1×1 Conv  →  (B, K, 256, 256)  logits
     """
 
-    def __init__(self, n_classes: int = N_CLASSES):
+    def __init__(self, n_classes: int = N_CLASSES,
+                 single_scale: bool = False,
+                 no_soft_mask: bool = False):
         super().__init__()
         self.n_classes = n_classes
+        self.single_scale = single_scale
+        self.no_soft_mask = no_soft_mask
 
         # ── Encoder ───────────────────────────────────────────────────────────
         self.encoder = HierarchicalEncoder2D(in_channels=1)
         ch = HierarchicalEncoder2D.CHANNELS  # {1:32, 2:64, 3:128, 4:256}
 
-        # ── Prototype layers (one per encoder level) ──────────────────────────
-        # Use nn.ModuleDict with string keys (required by PyTorch)
+        # ── Prototype layers ──────────────────────────────────────────────────
+        # single_scale: only level 4 has prototypes
+        active_levels = [4] if single_scale else [1, 2, 3, 4]
         self.proto_layers = nn.ModuleDict({
             str(l): PrototypeLayer(n_classes, PROTOS_PER_LEVEL[l], ch[l])
-            for l in [1, 2, 3, 4]
+            for l in active_levels
         })
         self.soft_mask = SoftMaskModule()
 
@@ -129,9 +138,13 @@ class ProtoSegNet(nn.Module):
         heatmaps: dict[int, torch.Tensor] = {}
         masked: dict[int, torch.Tensor] = {}
         for l in [1, 2, 3, 4]:
-            A = self._proto_layer(l)(feat[l])  # (B, K, M, H_l, W_l)
-            heatmaps[l] = A
-            masked[l] = self.soft_mask(A, feat[l])  # (B, C_l, H_l, W_l)
+            if str(l) in self.proto_layers:
+                A = self._proto_layer(l)(feat[l])          # (B, K, M, H_l, W_l)
+                heatmaps[l] = A
+                masked[l] = feat[l] if self.no_soft_mask else self.soft_mask(A, feat[l])
+            else:
+                # single_scale: no prototype/mask for this level; pass raw features
+                masked[l] = feat[l]
 
         # ── Decoder ──────────────────────────────────────────────────────────
         d = self.dec4(masked[4], masked[3])  # (B, 128, 32, 32)

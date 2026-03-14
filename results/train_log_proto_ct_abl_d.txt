@@ -1,0 +1,43 @@
+
+============================================================
+  Training ProtoSegNet — CT  (suffix='_abl_d')
+  Device: mps  |  Batch: 16  |  Max epochs: 50
+  λ_div=0.01  λ_push=0.0  λ_pull=0.0
+  single_scale=False  no_soft_mask=False
+  Projection every 10 epochs (Phase B)
+============================================================
+
+  Train: 3389 slices  Val: 382 slices  Test: 484 slices
+  Loaded class weights from class_weights_ct.pt
+  Model params: 2,556,264
+  Phase A: backbone + decoder; prototypes frozen (epochs 1–20)
+
+  [A] Ep   1/100 | loss=1.2953 (D=0.9404 CE=1.6502 div=0.0000) | val=0.1851 ← best | lr=3.00e-04 | 33.8s
+  [A] Ep   5/100 | loss=0.3288 (D=0.3508 CE=0.3068 div=0.0000) | val=0.6480 ← best | lr=2.93e-04 | 33.8s
+  [A] Ep  10/100 | loss=0.1346 (D=0.1443 CE=0.1249 div=0.0000) | val=0.7213 ← best | lr=2.71e-04 | 33.9s
+  [A] Ep  15/100 | loss=0.0916 (D=0.0995 CE=0.0836 div=0.0000) | val=0.7908 ← best | lr=2.38e-04 | 34.4s
+  [A] Ep  20/100 | loss=0.0697 (D=0.0778 CE=0.0616 div=0.0000) | val=0.7725 | lr=1.96e-04 | 34.5s
+
+  → Phase B: all params; diversity loss active (epochs 21–50)
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 75.3s
+  [B] Ep  25/100 | loss=39.0571 (D=0.6760 CE=1.0254 div=3820.6441) | val=0.2112 ← best | lr=1.50e-04 | 51.0s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 73.2s
+  [B] Ep  30/100 | loss=24.3447 (D=0.5106 CE=0.6830 div=2374.7876) | val=0.4009 ← best | lr=1.04e-04 | 50.9s
+  [B] Ep  35/100 | loss=17.0361 (D=0.3983 CE=0.4942 div=1658.9857) | val=0.4764 ← best | lr=6.18e-05 | 50.7s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 73.7s
+  [B] Ep  40/100 | loss=14.9971 (D=0.3109 CE=0.3456 div=1466.8909) | val=0.5305 ← best | lr=2.86e-05 | 51.0s
+  [B] Ep  45/100 | loss=13.8334 (D=0.2672 CE=0.2742 div=1356.2681) | val=0.6222 ← best | lr=7.34e-06 | 50.4s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 70.0s
+  [B] Ep  50/100 | loss=14.1973 (D=0.2513 CE=0.2516 div=1394.5817) | val=0.6088 | lr=0.00e+00 | 50.5s
+
+  Best val mean fg Dice: 0.6222 at epoch 45
+  Checkpoint : cardiac-proto-segmentation/checkpoints/proto_seg_ct_abl_d.pth
+  Log        : cardiac-proto-segmentation/results/train_curve_proto_ct_abl_d.csv

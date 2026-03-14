@@ -1,0 +1,87 @@
+Device  : mps
+Modality: CT
+Checkpoint: checkpoints/proto_seg_ct_abl_d.pth
+Model loaded (2,556,264 params)
+Test patients: 2
+
+[1/2] ct_1019  (199 slices)
+  AP done  (1.9s)  mean_fg=0.0122
+  IDS done (26.9s)  ids=0.0058
+  Faith done (1382.3s)  r=0.0235
+  Stab done (16.9s)  stab=1.9984
+
+============================================================
+ Patient: ct_1019
+============================================================
+
+  Activation Precision — ct_1019
+  Class               AP
+  ----------------------
+  LV              0.0002
+  RV              0.0144
+  LA              0.0150
+  RA              0.0494
+  Myocardium      0.0027
+  Aorta           0.0012
+  PA              0.0028
+  ----------------------
+  Mean (fg)       0.0122
+
+  IDS            : 0.0058  ± 0.0066
+  Faithfulness   : 0.0235  ± 0.0195
+  Stability      : 1.9984  ± 0.1188
+
+
+[2/2] ct_1020  (285 slices)
+  AP done  (2.5s)  mean_fg=0.1134
+  IDS done (38.6s)  ids=0.0153
+  Faith done (1977.8s)  r=0.0996
+  Stab done (24.1s)  stab=1.5998
+
+============================================================
+ Patient: ct_1020
+============================================================
+
+  Activation Precision — ct_1020
+  Class               AP
+  ----------------------
+  LV              0.0729
+  RV              0.0376
+  LA              0.2609
+  RA              0.0758
+  Myocardium      0.2932
+  Aorta           0.0531
+  PA              0.0005
+  ----------------------
+  Mean (fg)       0.1134
+
+  IDS            : 0.0153  ± 0.0095
+  Faithfulness   : 0.0996  ± 0.0299
+  Stability      : 1.5998  ± 0.1114
+
+
+Total evaluation time: 57.9 min
+
+============================================================
+ Stage 6 Success Criteria
+============================================================
+
+  ct_1019
+    AP    : 0.0122  (target ≥ 0.7)  ❌
+    IDS   : 0.0058  (target ≤ 0.45)  ✅
+    Faith : 0.0235  (target ≥ 0.55)  ❌
+    Stab  : 1.9984  (target ≤ 0.2)  ❌
+
+  ct_1020
+    AP    : 0.1134  (target ≥ 0.7)  ❌
+    IDS   : 0.0153  (target ≤ 0.45)  ✅
+    Faith : 0.0996  (target ≥ 0.55)  ❌
+    Stab  : 1.5998  (target ≤ 0.2)  ❌
+
+============================================================
+ Aggregate over 2 patients
+============================================================
+  Mean AP        : 0.0628
+  Mean IDS       : 0.0105
+  Mean Faith     : 0.0615
+  Mean Stab      : 1.7991
