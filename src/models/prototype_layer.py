@@ -123,6 +123,63 @@ class SoftMaskModule(nn.Module):
         return Z_l * mask  # (B, C, H, W)
 
 
+class HardMaskModule(nn.Module):
+    """
+    Hard spatial gate with Straight-Through Estimator (STE).
+
+    Replaces SoftMaskModule to break the information bypass path identified in
+    Stage 8: the soft-mask allowed the decoder to ignore prototype heatmaps via
+    skip connections. The hard binary gate forces all spatial locations below the
+    quantile threshold to exactly zero, blocking the bypass.
+
+    Forward pass  : binary mask  (0 or 1)  — decoder sees only prototype-activated regions
+    Backward pass : gradient flows through the continuous heatmap W (STE approximation)
+
+    Steps
+    -----
+    1. Max over prototypes M → per-class map   (B, K, H, W)
+    2. Max over classes K   → aggregate weight (B, 1, H, W)   [W ∈ (0, 1]]
+    3. Threshold at sample-wise quantile q     → binary mask   (B, 1, H, W)
+    4. STE: value = hard mask; gradient = W
+    5. Multiply Z_l by mask_ste
+
+    Args
+    ----
+    quantile : float  spatial percentile threshold in [0, 1).
+               0.5 zeros the bottom 50% of spatial locations per sample.
+               Lower → less aggressive (closer to soft-mask behaviour).
+               Higher → more aggressive (sparser decoder input).
+
+    Input  : A    (B, K, M, H, W)   heatmap from PrototypeLayer
+             Z_l  (B, C, H, W)      raw feature map from encoder
+    Output : masked_Z  (B, C, H, W) — same spatial shape as Z_l
+    """
+
+    def __init__(self, quantile: float = 0.5):
+        super().__init__()
+        assert 0.0 <= quantile < 1.0, f"quantile must be in [0, 1), got {quantile}"
+        self.quantile = quantile
+
+    def forward(self, A: torch.Tensor, Z_l: torch.Tensor) -> torch.Tensor:
+        # max over M  →  (B, K, H, W)
+        A_max = A.max(dim=2).values
+        # max over K  →  (B, 1, H, W)  peak prototype activation per spatial location
+        W = A_max.max(dim=1, keepdim=True).values  # ∈ (0, 1]
+
+        # Per-sample threshold: shape (B, 1, 1, 1)
+        with torch.no_grad():
+            tau = W.flatten(1).quantile(self.quantile, dim=1).view(-1, 1, 1, 1)
+
+        # Hard binary mask (non-differentiable, forward value)
+        mask_hard = (W >= tau).float()
+
+        # STE: forward uses mask_hard; backward gradient flows through W
+        # mask_ste == mask_hard numerically; dL/dW flows in backward
+        mask_ste = mask_hard.detach() + W - W.detach()
+
+        return Z_l * mask_ste  # (B, C, H, W)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PrototypeProjection
 # ─────────────────────────────────────────────────────────────────────────────

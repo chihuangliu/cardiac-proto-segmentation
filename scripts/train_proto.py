@@ -3,6 +3,7 @@
 scripts/train_proto.py
 Stage 7 — ProtoSegNet Training
 Stage 8 — Push-Pull XAI Fix (--lambda-push / --lambda-pull)
+Stage 9 — Hard Mask (--hard-mask / --mask-quantile)
 
 3-phase training schedule:
   Phase A (ep 1–20):   backbone + decoder; prototypes frozen
@@ -13,6 +14,7 @@ Usage:
     python scripts/train_proto.py --modality ct
     python scripts/train_proto.py --modality mr
     python scripts/train_proto.py --modality ct --lambda-push 0.1 --lambda-pull 0.05 --suffix _pp
+    python scripts/train_proto.py --modality ct --hard-mask --mask-quantile 0.5 --suffix _hm
 """
 
 import argparse
@@ -131,7 +133,8 @@ def set_phase(model, epoch, optimizer, phase_b_end=PHASE_B_END):
 def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LAMBDA_PUSH,
           lambda_pull: float = LAMBDA_PULL, suffix: str = "", start_epoch: int = 1,
           init_checkpoint: str = "", max_epochs: int = MAX_EPOCHS,
-          single_scale: bool = False, no_soft_mask: bool = False) -> None:
+          single_scale: bool = False, no_soft_mask: bool = False,
+          hard_mask: bool = False, mask_quantile: float = 0.5) -> None:
     device = pick_device()
     CKPT_DIR.mkdir(exist_ok=True)
     RESULT_DIR.mkdir(exist_ok=True)
@@ -144,6 +147,7 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
     print(f"  Device: {device}  |  Batch: {BATCH_SIZE}  |  Max epochs: {max_epochs}")
     print(f"  λ_div={lambda_div}  λ_push={lambda_push}  λ_pull={lambda_pull}")
     print(f"  single_scale={single_scale}  no_soft_mask={no_soft_mask}")
+    print(f"  hard_mask={hard_mask}  mask_quantile={mask_quantile}")
     print(f"  Projection every {PROJECTION_INTERVAL} epochs (Phase B)")
     print(f"{'='*60}\n")
 
@@ -166,7 +170,9 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
     # Model + loss
     model = ProtoSegNet(n_classes=NUM_CLASSES,
                         single_scale=single_scale,
-                        no_soft_mask=no_soft_mask).to(device)
+                        no_soft_mask=no_soft_mask,
+                        hard_mask=hard_mask,
+                        mask_quantile=mask_quantile).to(device)
     if init_checkpoint:
         ckpt = torch.load(init_checkpoint, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"])
@@ -223,6 +229,9 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
             if current_phase == "B":
                 print(f"\n  → Phase B: all params; diversity loss active "
                       f"(epochs {PHASE_A_END+1}–{phase_b_end})")
+                if hard_mask:
+                    model.hard_mask_active = True
+                    print(f"  [Hard mask] Activated (quantile={mask_quantile})")
                 run_projection(model, modality, device, proj_path)
                 # Reset best so Phase B/C find their own best checkpoint
                 # (Phase A val Dice is not comparable once diversity loss is active)
@@ -310,6 +319,9 @@ def train(modality: str, lambda_div: float = LAMBDA_DIV, lambda_push: float = LA
                     "lambda_pull": lambda_pull,
                     "single_scale": single_scale,
                     "no_soft_mask": no_soft_mask,
+                    "hard_mask": hard_mask,
+                    "mask_quantile": mask_quantile,
+                    "hard_mask_active": model.hard_mask_active,
                 }, ckpt_path)
                 flag = " ← best"
             else:
@@ -366,13 +378,18 @@ def main():
     parser.add_argument("--single-scale", action="store_true",
                         help="Ablation: use only level-4 prototypes (no multi-scale)")
     parser.add_argument("--no-soft-mask", action="store_true",
-                        help="Ablation: skip SoftMaskModule; raw encoder features to decoder")
+                        help="Ablation: skip mask module entirely; raw encoder features to decoder")
+    parser.add_argument("--hard-mask", action="store_true",
+                        help="Stage 9: use HardMaskModule (STE binary gate) instead of SoftMaskModule")
+    parser.add_argument("--mask-quantile", type=float, default=0.5,
+                        help="Spatial quantile threshold for HardMaskModule (default 0.5)")
     args = parser.parse_args()
     train(args.modality, lambda_div=args.lambda_div, lambda_push=args.lambda_push,
           lambda_pull=args.lambda_pull, suffix=args.suffix,
           start_epoch=args.start_epoch, init_checkpoint=args.init_checkpoint,
           max_epochs=args.max_epochs, single_scale=args.single_scale,
-          no_soft_mask=args.no_soft_mask)
+          no_soft_mask=args.no_soft_mask, hard_mask=args.hard_mask,
+          mask_quantile=args.mask_quantile)
 
 
 if __name__ == "__main__":

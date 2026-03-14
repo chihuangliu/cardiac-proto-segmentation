@@ -1,0 +1,66 @@
+
+============================================================
+  Training ProtoSegNet — CT  (suffix='_hm2')
+  Device: mps  |  Batch: 16  |  Max epochs: 100
+  λ_div=0.001  λ_push=0.5  λ_pull=0.25
+  single_scale=False  no_soft_mask=False
+  hard_mask=True  mask_quantile=0.5
+  Projection every 10 epochs (Phase B)
+============================================================
+
+  Train: 3389 slices  Val: 382 slices  Test: 484 slices
+  Loaded class weights from class_weights_ct.pt
+  Model params: 2,556,264
+  Phase A: backbone + decoder; prototypes frozen (epochs 1–20)
+
+  [A] Ep   1/100 | loss=1.2290 (D=0.9284 CE=1.5295 div=0.0000 push=0.0000 pull=0.0000) | val=0.2381 ← best | lr=3.00e-04 | 34.6s
+  [A] Ep   5/100 | loss=0.2376 (D=0.2611 CE=0.2141 div=0.0000 push=0.0000 pull=0.0000) | val=0.5635 ← best | lr=2.98e-04 | 33.9s
+  [A] Ep  10/100 | loss=0.1172 (D=0.1266 CE=0.1078 div=0.0000 push=0.0000 pull=0.0000) | val=0.7214 ← best | lr=2.93e-04 | 34.0s
+  [A] Ep  15/100 | loss=0.0825 (D=0.0914 CE=0.0736 div=0.0000 push=0.0000 pull=0.0000) | val=0.7606 ← best | lr=2.84e-04 | 34.0s
+  [A] Ep  20/100 | loss=0.0689 (D=0.0766 CE=0.0612 div=0.0000 push=0.0000 pull=0.0000) | val=0.7685 ← best | lr=2.71e-04 | 33.9s
+
+  → Phase B: all params; diversity loss active (epochs 21–80)
+  [Hard mask] Activated (quantile=0.5)
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 71.9s
+  [B] Ep  25/100 | loss=2.8880 (D=0.2059 CE=0.1984 div=2892.0120 push=-0.7879 pull=0.7512) | val=0.7321 ← best | lr=2.56e-04 | 50.9s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 71.6s
+  [B] Ep  30/100 | loss=1.9038 (D=0.1588 CE=0.1487 div=1980.7537 push=-0.8802 pull=0.8378) | val=0.7344 ← best | lr=2.38e-04 | 50.9s
+  [B] Ep  35/100 | loss=0.9401 (D=0.1349 CE=0.1205 div=1042.3517 push=-0.8941 pull=0.8684) | val=0.7192 | lr=2.18e-04 | 50.9s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 75.0s
+  [B] Ep  40/100 | loss=0.9914 (D=0.1293 CE=0.1228 div=1106.2022 push=-0.9223 pull=0.8814) | val=0.7719 ← best | lr=1.96e-04 | 51.8s
+  [B] Ep  45/100 | loss=0.5879 (D=0.1067 CE=0.0911 div=728.5348 push=-0.9291 pull=0.9003) | val=0.7667 | lr=1.73e-04 | 51.4s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 72.6s
+  [B] Ep  50/100 | loss=0.5290 (D=0.0978 CE=0.0823 div=682.7686 push=-0.9393 pull=0.9033) | val=0.7966 ← best | lr=1.50e-04 | 51.5s
+  [B] Ep  55/100 | loss=0.3833 (D=0.0886 CE=0.0718 div=546.9557 push=-0.9442 pull=0.9127) | val=0.8146 ← best | lr=1.27e-04 | 53.1s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 75.8s
+  [B] Ep  60/100 | loss=0.3735 (D=0.0893 CE=0.0757 div=537.8137 push=-0.9487 pull=0.9102) | val=0.7881 | lr=1.04e-04 | 51.5s
+  [B] Ep  65/100 | loss=0.2896 (D=0.0785 CE=0.0633 div=465.1931 push=-0.9519 pull=0.9177) | val=0.7910 | lr=8.19e-05 | 51.6s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 74.7s
+  [B] Ep  70/100 | loss=0.3006 (D=0.0852 CE=0.0746 div=468.4017 push=-0.9542 pull=0.9174) | val=0.7810 | lr=6.18e-05 | 51.8s
+  [B] Ep  75/100 | loss=0.2538 (D=0.0752 CE=0.0607 div=433.6989 push=-0.9566 pull=0.9216) | val=0.7934 | lr=4.39e-05 | 51.8s
+  [Projection] Building feature bank on CPU…
+Projected prototypes saved → cardiac-proto-segmentation/checkpoints/projected_prototypes_ct.pt
+  [Projection] Done in 84.8s
+  [B] Ep  80/100 | loss=0.2555 (D=0.0724 CE=0.0591 div=438.9890 push=-0.9589 pull=0.9209) | val=0.7948 | lr=2.86e-05 | 52.2s
+
+  → Phase C: decoder fine-tuning only (epochs 81–100)
+  [C] Ep  85/100 | loss=0.2505 (D=0.0712 CE=0.0550 div=436.7001 push=-0.9594 pull=0.9218) | val=0.8056 | lr=1.63e-05 | 31.0s
+  [C] Ep  90/100 | loss=0.2485 (D=0.0693 CE=0.0531 div=436.5812 push=-0.9594 pull=0.9218) | val=0.8047 | lr=7.34e-06 | 30.4s
+  [C] Ep  95/100 | loss=0.2494 (D=0.0700 CE=0.0534 div=436.8889 push=-0.9593 pull=0.9217) | val=0.8049 | lr=1.85e-06 | 30.5s
+  [C] Ep 100/100 | loss=0.2490 (D=0.0683 CE=0.0535 div=437.2741 push=-0.9592 pull=0.9217) | val=0.8022 | lr=0.00e+00 | 30.6s
+
+  Best val mean fg Dice: 0.8146 at epoch 55
+  Checkpoint : cardiac-proto-segmentation/checkpoints/proto_seg_ct_hm2.pth
+  Log        : cardiac-proto-segmentation/results/train_curve_proto_ct_hm2.csv

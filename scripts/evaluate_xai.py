@@ -145,7 +145,10 @@ def main() -> None:
         n_classes=N_CLASSES,
         single_scale=ckpt.get("single_scale", False),
         no_soft_mask=ckpt.get("no_soft_mask", False),
+        hard_mask=ckpt.get("hard_mask", False),
+        mask_quantile=ckpt.get("mask_quantile", 0.5),
     ).to(device)
+    model.hard_mask_active = ckpt.get("hard_mask_active", ckpt.get("hard_mask", False))
     state = (ckpt.get("model_state_dict")
              or ckpt.get("model_state")
              or ckpt)

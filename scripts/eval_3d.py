@@ -182,12 +182,19 @@ def main() -> None:
     print(f"Spacing   : {args.spacing} mm")
 
     # ── Load model ─────────────────────────────────────────────────────────────
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     if args.baseline:
         model = UNet(n_classes=NUM_CLASSES).to(device)
     else:
-        model = ProtoSegNet(n_classes=NUM_CLASSES).to(device)
+        model = ProtoSegNet(
+            n_classes=NUM_CLASSES,
+            single_scale=ckpt.get("single_scale", False),
+            no_soft_mask=ckpt.get("no_soft_mask", False),
+            hard_mask=ckpt.get("hard_mask", False),
+            mask_quantile=ckpt.get("mask_quantile", 0.5),
+        ).to(device)
+        model.hard_mask_active = ckpt.get("hard_mask_active", ckpt.get("hard_mask", False))
 
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     # Handle multiple possible key names
     state = (ckpt.get("model_state_dict")
              or ckpt.get("model_state")

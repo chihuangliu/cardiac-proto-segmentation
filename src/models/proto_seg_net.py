@@ -1,12 +1,13 @@
 """
 src/models/proto_seg_net.py
 Stage 5 — Full Prototype Segmentation Network
+Stage 9 — Hard Mask (HardMaskModule + STE) replaces SoftMaskModule
 
 ProtoSegNet: end-to-end pipeline
     Input X  (B, 1, 256, 256)
     → HierarchicalEncoder2D  → {Z_l}  per-level feature maps
     → PrototypeLayer (per level)      → {A_{l,k,m}} heatmaps (B, K, M, H_l, W_l)
-    → SoftMaskModule                  → masked feature maps  (B, C_l, H_l, W_l)
+    → SoftMaskModule | HardMaskModule → masked feature maps  (B, C_l, H_l, W_l)
     → 2D Decoder (bilinear upsample + skip connections from masked features)
     → 1×1 Conv                        → logits (B, K, 256, 256)
 
@@ -20,7 +21,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.models.encoder import HierarchicalEncoder2D
-from src.models.prototype_layer import PrototypeLayer, SoftMaskModule, PROTOS_PER_LEVEL
+from src.models.prototype_layer import (
+    PrototypeLayer, SoftMaskModule, HardMaskModule, PROTOS_PER_LEVEL
+)
 
 N_CLASSES = 8
 
@@ -57,8 +60,10 @@ class ProtoSegNet(nn.Module):
     Prototype counts  : {l1: 4, l2: 3, l3: 2, l4: 2} per class
 
     Ablation flags:
-        single_scale : only level-4 prototypes; levels 1-3 skip prototype & soft-mask
-        no_soft_mask : bypass SoftMaskModule; raw encoder features fed to decoder
+        single_scale : only level-4 prototypes; levels 1-3 skip prototype & mask
+        no_soft_mask : bypass mask module entirely; raw encoder features fed to decoder
+        hard_mask    : use HardMaskModule (STE binary gate) instead of SoftMaskModule
+        mask_quantile: spatial quantile threshold for HardMaskModule (default 0.5)
 
     Decoder (deep → shallow):
         masked_Z4  (B, 256, 16,  16)  ─→  DecoderBlock(256+128, 128)  →  (B, 128, 32, 32)
@@ -77,11 +82,15 @@ class ProtoSegNet(nn.Module):
 
     def __init__(self, n_classes: int = N_CLASSES,
                  single_scale: bool = False,
-                 no_soft_mask: bool = False):
+                 no_soft_mask: bool = False,
+                 hard_mask: bool = False,
+                 mask_quantile: float = 0.5):
         super().__init__()
         self.n_classes = n_classes
         self.single_scale = single_scale
         self.no_soft_mask = no_soft_mask
+        self.hard_mask = hard_mask
+        self.mask_quantile = mask_quantile
 
         # ── Encoder ───────────────────────────────────────────────────────────
         self.encoder = HierarchicalEncoder2D(in_channels=1)
@@ -94,7 +103,19 @@ class ProtoSegNet(nn.Module):
             str(l): PrototypeLayer(n_classes, PROTOS_PER_LEVEL[l], ch[l])
             for l in active_levels
         })
-        self.soft_mask = SoftMaskModule()
+
+        # ── Mask module ───────────────────────────────────────────────────────
+        # hard_mask=True stores both modules; hard gating is activated only when
+        # hard_mask_active is set to True (done at Phase A→B transition in trainer).
+        # During Phase A (random prototypes), hard_mask_active=False so the decoder
+        # learns with soft-mask inputs, avoiding disruption from random binary gating.
+        if hard_mask:
+            self.mask_module = HardMaskModule(quantile=mask_quantile)
+            self._soft_mask_fallback = SoftMaskModule()
+        else:
+            self.mask_module = SoftMaskModule()
+            self._soft_mask_fallback = None
+        self.hard_mask_active: bool = False   # set True by trainer at Phase B start
 
         # ── Decoder ───────────────────────────────────────────────────────────
         # dec4: upsample Z4 (16→32)  +  skip Z3  →  128 ch
@@ -141,7 +162,13 @@ class ProtoSegNet(nn.Module):
             if str(l) in self.proto_layers:
                 A = self._proto_layer(l)(feat[l])          # (B, K, M, H_l, W_l)
                 heatmaps[l] = A
-                masked[l] = feat[l] if self.no_soft_mask else self.soft_mask(A, feat[l])
+                if self.no_soft_mask:
+                    masked[l] = feat[l]
+                elif self.hard_mask and not self.hard_mask_active:
+                    # Phase A: prototypes random → use soft mask to avoid random binary gating
+                    masked[l] = self._soft_mask_fallback(A, feat[l])
+                else:
+                    masked[l] = self.mask_module(A, feat[l])
             else:
                 # single_scale: no prototype/mask for this level; pass raw features
                 masked[l] = feat[l]
