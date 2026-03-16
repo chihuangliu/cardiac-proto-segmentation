@@ -60,7 +60,12 @@ class ProtoSegNet(nn.Module):
     Prototype counts  : {l1: 4, l2: 3, l3: 2, l4: 2} per class
 
     Ablation flags:
-        single_scale : only level-4 prototypes; levels 1-3 skip prototype & mask
+        proto_levels : list of levels to place prototypes on, e.g. [4] or [3, 4].
+                       Levels not in the list pass raw encoder features to the decoder
+                       unchanged. Default None = [1, 2, 3, 4] (all levels).
+                       Supersedes single_scale when provided.
+        single_scale : legacy flag — equivalent to proto_levels=[4]. Ignored when
+                       proto_levels is explicitly set.
         no_soft_mask : bypass mask module entirely; raw encoder features fed to decoder
         hard_mask    : use HardMaskModule (STE binary gate) instead of SoftMaskModule
         mask_quantile: spatial quantile threshold for HardMaskModule (default 0.5)
@@ -81,24 +86,33 @@ class ProtoSegNet(nn.Module):
     """
 
     def __init__(self, n_classes: int = N_CLASSES,
+                 proto_levels: list[int] | None = None,
                  single_scale: bool = False,
                  no_soft_mask: bool = False,
                  hard_mask: bool = False,
                  mask_quantile: float = 0.5):
         super().__init__()
         self.n_classes = n_classes
-        self.single_scale = single_scale
         self.no_soft_mask = no_soft_mask
         self.hard_mask = hard_mask
         self.mask_quantile = mask_quantile
+
+        # Resolve active levels: proto_levels takes priority over single_scale
+        if proto_levels is not None:
+            active_levels = sorted(proto_levels)
+        elif single_scale:
+            active_levels = [4]
+        else:
+            active_levels = [1, 2, 3, 4]
+        self.proto_levels = active_levels
+        # Keep single_scale for checkpoint backward compat
+        self.single_scale = (active_levels == [4])
 
         # ── Encoder ───────────────────────────────────────────────────────────
         self.encoder = HierarchicalEncoder2D(in_channels=1)
         ch = HierarchicalEncoder2D.CHANNELS  # {1:32, 2:64, 3:128, 4:256}
 
         # ── Prototype layers ──────────────────────────────────────────────────
-        # single_scale: only level 4 has prototypes
-        active_levels = [4] if single_scale else [1, 2, 3, 4]
         self.proto_layers = nn.ModuleDict({
             str(l): PrototypeLayer(n_classes, PROTOS_PER_LEVEL[l], ch[l])
             for l in active_levels

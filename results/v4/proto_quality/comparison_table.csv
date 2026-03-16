@@ -1,0 +1,4 @@
+,3D_Dice,n_prototypes,purity_L4,purity_all,dead_protos,compactness_L4,important_protos,dominance_L4,dominance_L1+L2,AP_L4
+M4 (L1-L4),0.8407,77,0.824,0.334,0,0.573,7,4.3%,78.5%,0.189
+M2 (L3-L4),0.8722,28,0.804,0.733,0,0.361,10,49.1%,0.0%,0.236
+M1 (L4),0.8524,14,0.499,0.499,0,0.564,4,100.0%,0.0%,0.274
