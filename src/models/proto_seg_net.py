@@ -1,7 +1,8 @@
 """
 src/models/proto_seg_net.py
-Stage 5 — Full Prototype Segmentation Network
-Stage 9 — Hard Mask (HardMaskModule + STE) replaces SoftMaskModule
+Stage 5  — Full Prototype Segmentation Network
+Stage 9  — Hard Mask (HardMaskModule + STE) replaces SoftMaskModule
+Stage 19 — LevelAttentionModule: learned weighted-sum aggregation over levels
 
 ProtoSegNet: end-to-end pipeline
     Input X  (B, 1, 256, 256)
@@ -14,6 +15,11 @@ ProtoSegNet: end-to-end pipeline
 forward() returns (logits, heatmaps_dict):
     logits        : (B, K, H, W)  raw segmentation logits (no softmax)
     heatmaps_dict : {level: (B, K, M, H_l, W_l)}  for XAI metrics
+
+use_level_attention=True replaces the cross-level max aggregation (used to build the
+soft mask) with a learned weighted sum.  The mask module then receives a blended
+feature map instead of the max-activated one.  Backward compatible: existing
+checkpoints load unchanged with use_level_attention=False (default).
 """
 
 import torch
@@ -26,6 +32,54 @@ from src.models.prototype_layer import (
 )
 
 N_CLASSES = 8
+
+
+# ── Level Attention Module ─────────────────────────────────────────────────────
+
+class LevelAttentionModule(nn.Module):
+    """
+    Learns soft weights over active prototype levels conditioned on encoder context.
+
+    For each input image, produces a (B, n_levels) softmax weight vector that is
+    used to blend per-level prototype heatmaps before the soft-mask step:
+
+        heatmap_blended[k] = Σ_l  w[:,l] * upsample(max_m A[l,k,m])
+
+    This replaces the cross-level max aggregation with a learned, input-conditioned
+    weighted sum, allowing the model to discover that deep levels (L3, L4) are more
+    semantically informative than shallow ones (L1, L2).
+
+    Architecture:
+        Global avg pool each active level → concat → Linear → ReLU → Linear → softmax
+
+    Args:
+        active_levels : sorted list of level ints, e.g. [1, 2, 3, 4] or [3, 4]
+        channels      : dict {level_int: n_channels}, e.g. {1:32, 2:64, 3:128, 4:256}
+        hidden_dim    : MLP hidden size (default 64)
+    """
+
+    def __init__(self, active_levels: list[int], channels: dict[int, int],
+                 hidden_dim: int = 64):
+        super().__init__()
+        self.active_levels = active_levels
+        in_dim = sum(channels[l] for l in active_levels)
+        n_levels = len(active_levels)
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, n_levels),
+        )
+
+    def forward(self, feat: dict[int, torch.Tensor]) -> torch.Tensor:
+        """
+        Args:
+            feat : {level: (B, C_l, H_l, W_l)}
+        Returns:
+            w    : (B, n_levels)  softmax attention weights
+        """
+        pooled = [feat[l].mean(dim=(2, 3)) for l in self.active_levels]  # [(B, C_l)]
+        x = torch.cat(pooled, dim=1)                                      # (B, sum_C_l)
+        return torch.softmax(self.mlp(x), dim=1)                          # (B, n_levels)
 
 
 # ── Decoder building block ─────────────────────────────────────────────────────
@@ -60,15 +114,17 @@ class ProtoSegNet(nn.Module):
     Prototype counts  : {l1: 4, l2: 3, l3: 2, l4: 2} per class
 
     Ablation flags:
-        proto_levels : list of levels to place prototypes on, e.g. [4] or [3, 4].
-                       Levels not in the list pass raw encoder features to the decoder
-                       unchanged. Default None = [1, 2, 3, 4] (all levels).
-                       Supersedes single_scale when provided.
-        single_scale : legacy flag — equivalent to proto_levels=[4]. Ignored when
-                       proto_levels is explicitly set.
-        no_soft_mask : bypass mask module entirely; raw encoder features fed to decoder
-        hard_mask    : use HardMaskModule (STE binary gate) instead of SoftMaskModule
-        mask_quantile: spatial quantile threshold for HardMaskModule (default 0.5)
+        proto_levels       : list of levels to place prototypes on, e.g. [4] or [3, 4].
+                             Levels not in the list pass raw encoder features to the
+                             decoder unchanged. Default None = [1, 2, 3, 4] (all levels).
+                             Supersedes single_scale when provided.
+        single_scale       : legacy flag — equivalent to proto_levels=[4]. Ignored when
+                             proto_levels is explicitly set.
+        no_soft_mask       : bypass mask module entirely; raw encoder features fed to decoder
+        hard_mask          : use HardMaskModule (STE binary gate) instead of SoftMaskModule
+        mask_quantile      : spatial quantile threshold for HardMaskModule (default 0.5)
+        use_level_attention: replace cross-level max aggregation with LevelAttentionModule
+                             weighted sum. Default False (backward compatible).
 
     Decoder (deep → shallow):
         masked_Z4  (B, 256, 16,  16)  ─→  DecoderBlock(256+128, 128)  →  (B, 128, 32, 32)
@@ -90,12 +146,14 @@ class ProtoSegNet(nn.Module):
                  single_scale: bool = False,
                  no_soft_mask: bool = False,
                  hard_mask: bool = False,
-                 mask_quantile: float = 0.5):
+                 mask_quantile: float = 0.5,
+                 use_level_attention: bool = False):
         super().__init__()
         self.n_classes = n_classes
         self.no_soft_mask = no_soft_mask
         self.hard_mask = hard_mask
         self.mask_quantile = mask_quantile
+        self.use_level_attention = use_level_attention
 
         # Resolve active levels: proto_levels takes priority over single_scale
         if proto_levels is not None:
@@ -130,6 +188,13 @@ class ProtoSegNet(nn.Module):
             self.mask_module = SoftMaskModule()
             self._soft_mask_fallback = None
         self.hard_mask_active: bool = False   # set True by trainer at Phase B start
+
+        # ── Level attention ───────────────────────────────────────────────────
+        if use_level_attention and len(active_levels) > 1:
+            self.level_attention = LevelAttentionModule(active_levels, ch)
+        else:
+            self.level_attention = None
+        self._cached_attn_weights: torch.Tensor | None = None  # set during forward()
 
         # ── Decoder ───────────────────────────────────────────────────────────
         # dec4: upsample Z4 (16→32)  +  skip Z3  →  128 ch
@@ -169,22 +234,51 @@ class ProtoSegNet(nn.Module):
         # ── Encoder ──────────────────────────────────────────────────────────
         feat = self.encoder(x)  # {1: Z1, 2: Z2, 3: Z3, 4: Z4}
 
-        # ── Prototype heatmaps + soft masks ──────────────────────────────────
+        # ── Prototype heatmaps ────────────────────────────────────────────────
         heatmaps: dict[int, torch.Tensor] = {}
+        for l in [1, 2, 3, 4]:
+            if str(l) in self.proto_layers:
+                heatmaps[l] = self._proto_layer(l)(feat[l])  # (B, K, M, H_l, W_l)
+
+        # ── Level attention weights (optional) ───────────────────────────────
+        # w: (B, n_active_levels) — only computed when level_attention is active
+        if self.level_attention is not None:
+            w = self.level_attention(feat)   # (B, n_levels), softmax
+            self._cached_attn_weights = w    # cached for entropy regularisation in training loop
+        else:
+            w = None
+            self._cached_attn_weights = None
+
+        # ── Soft masks ────────────────────────────────────────────────────────
         masked: dict[int, torch.Tensor] = {}
         for l in [1, 2, 3, 4]:
             if str(l) in self.proto_layers:
-                A = self._proto_layer(l)(feat[l])          # (B, K, M, H_l, W_l)
-                heatmaps[l] = A
+                A = heatmaps[l]                              # (B, K, M, H_l, W_l)
+                if w is not None:
+                    # Weighted-sum aggregation: blend A with attention-weighted
+                    # contributions from all other active levels (upsampled to H_l, W_l).
+                    # A_blended[k] = Σ_{l'} w[:,i_{l'}] * upsample(max_m A[l',k,m])
+                    i_l = self.proto_levels.index(l)
+                    A_blended = torch.zeros_like(A[:, :, 0, :, :])  # (B, K, H_l, W_l)
+                    for j, l2 in enumerate(self.proto_levels):
+                        A_l2_max = heatmaps[l2].max(dim=2).values    # (B, K, H_l2, W_l2)
+                        A_l2_up  = F.interpolate(
+                            A_l2_max, size=A.shape[-2:],
+                            mode="bilinear", align_corners=False
+                        )                                             # (B, K, H_l, W_l)
+                        A_blended = A_blended + w[:, j:j+1, None, None] * A_l2_up
+                    # Expand to (B, K, 1, H_l, W_l) to reuse mask module interface
+                    A_for_mask = A_blended.unsqueeze(2)
+                else:
+                    A_for_mask = A
+
                 if self.no_soft_mask:
                     masked[l] = feat[l]
                 elif self.hard_mask and not self.hard_mask_active:
-                    # Phase A: prototypes random → use soft mask to avoid random binary gating
-                    masked[l] = self._soft_mask_fallback(A, feat[l])
+                    masked[l] = self._soft_mask_fallback(A_for_mask, feat[l])
                 else:
-                    masked[l] = self.mask_module(A, feat[l])
+                    masked[l] = self.mask_module(A_for_mask, feat[l])
             else:
-                # single_scale: no prototype/mask for this level; pass raw features
                 masked[l] = feat[l]
 
         # ── Decoder ──────────────────────────────────────────────────────────
@@ -201,24 +295,45 @@ class ProtoSegNet(nn.Module):
     # ── Parameter groups for phase-based training ─────────────────────────────
 
     def freeze_prototypes(self):
-        """Phase A: freeze all prototype parameters."""
+        """Phase A: freeze prototype parameters and level attention (if present)."""
         for pl in self.proto_layers.values():
             for p in pl.parameters():
                 p.requires_grad_(False)
+        if self.level_attention is not None:
+            for p in self.level_attention.parameters():
+                p.requires_grad_(False)
 
     def unfreeze_prototypes(self):
-        """Phase B: unfreeze prototype parameters."""
+        """Phase B: unfreeze prototype parameters and level attention (if present)."""
         for pl in self.proto_layers.values():
             for p in pl.parameters():
                 p.requires_grad_(True)
+        if self.level_attention is not None:
+            for p in self.level_attention.parameters():
+                p.requires_grad_(True)
 
     def freeze_encoder_and_prototypes(self):
-        """Phase C: freeze encoder and prototypes; only decoder trains."""
+        """Phase C: freeze encoder and prototypes; decoder + attention train."""
         for p in self.encoder.parameters():
             p.requires_grad_(False)
         for pl in self.proto_layers.values():
             for p in pl.parameters():
                 p.requires_grad_(False)
+
+    def get_attention_weights(self, x: torch.Tensor) -> torch.Tensor | None:
+        """
+        Return level attention weights for input x, or None if not using attention.
+
+        Args:
+            x : (B, 1, 256, 256)
+        Returns:
+            w : (B, n_active_levels) softmax weights, or None
+        """
+        if self.level_attention is None:
+            return None
+        with torch.no_grad():
+            feat = self.encoder(x)
+            return self.level_attention(feat)
 
     def unfreeze_all(self):
         """Unfreeze every parameter."""

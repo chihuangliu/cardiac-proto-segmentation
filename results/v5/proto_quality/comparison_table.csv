@@ -1,0 +1,4 @@
+Model,Levels,Aggregation,3D Dice,Purity L4,Compactness L4,AP L4,Dominance L4
+M4 (max),L1–L4,max,0.8407,0.824,0.573,0.189,4.3%
+M4-attn,L1–L4 + attn,weighted avg,0.8483,0.526,0.575,0.187,9.7%
+M2 (max),L3–L4,max,0.8722,0.804,0.361,0.236,49.1%
