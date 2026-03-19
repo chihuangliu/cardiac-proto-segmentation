@@ -28,13 +28,17 @@ import torch.nn.functional as F
 
 from src.models.encoder import HierarchicalEncoder2D
 from src.models.prototype_layer import (
-    PrototypeLayer, SoftMaskModule, HardMaskModule, PROTOS_PER_LEVEL
+    PrototypeLayer,
+    SoftMaskModule,
+    HardMaskModule,
+    PROTOS_PER_LEVEL,
 )
 
 N_CLASSES = 8
 
 
 # ── Level Attention Module ─────────────────────────────────────────────────────
+
 
 class LevelAttentionModule(nn.Module):
     """
@@ -58,8 +62,9 @@ class LevelAttentionModule(nn.Module):
         hidden_dim    : MLP hidden size (default 64)
     """
 
-    def __init__(self, active_levels: list[int], channels: dict[int, int],
-                 hidden_dim: int = 64):
+    def __init__(
+        self, active_levels: list[int], channels: dict[int, int], hidden_dim: int = 64
+    ):
         super().__init__()
         self.active_levels = active_levels
         in_dim = sum(channels[l] for l in active_levels)
@@ -69,6 +74,10 @@ class LevelAttentionModule(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, n_levels),
         )
+        # Temperature for annealed softmax (set from training loop each epoch).
+        # T > 1 → near-uniform weights (prevents init-dependent early commitment).
+        # T = 1 → standard softmax.
+        self.temperature = 1.0
 
     def forward(self, feat: dict[int, torch.Tensor]) -> torch.Tensor:
         """
@@ -78,11 +87,14 @@ class LevelAttentionModule(nn.Module):
             w    : (B, n_levels)  softmax attention weights
         """
         pooled = [feat[l].mean(dim=(2, 3)) for l in self.active_levels]  # [(B, C_l)]
-        x = torch.cat(pooled, dim=1)                                      # (B, sum_C_l)
-        return torch.softmax(self.mlp(x), dim=1)                          # (B, n_levels)
+        x = torch.cat(
+            pooled, dim=1
+        ).detach()  # (B, sum_C_l); detach breaks L2 feedback loop
+        return torch.softmax(self.mlp(x) / self.temperature, dim=1)  # (B, n_levels)
 
 
 # ── Decoder building block ─────────────────────────────────────────────────────
+
 
 class DecoderBlock(nn.Module):
     """
@@ -105,6 +117,7 @@ class DecoderBlock(nn.Module):
 
 
 # ── ProtoSegNet ────────────────────────────────────────────────────────────────
+
 
 class ProtoSegNet(nn.Module):
     """
@@ -141,13 +154,16 @@ class ProtoSegNet(nn.Module):
         1×1 Conv  →  (B, K, 256, 256)  logits
     """
 
-    def __init__(self, n_classes: int = N_CLASSES,
-                 proto_levels: list[int] | None = None,
-                 single_scale: bool = False,
-                 no_soft_mask: bool = False,
-                 hard_mask: bool = False,
-                 mask_quantile: float = 0.5,
-                 use_level_attention: bool = False):
+    def __init__(
+        self,
+        n_classes: int = N_CLASSES,
+        proto_levels: list[int] | None = None,
+        single_scale: bool = False,
+        no_soft_mask: bool = False,
+        hard_mask: bool = False,
+        mask_quantile: float = 0.5,
+        use_level_attention: bool = False,
+    ):
         super().__init__()
         self.n_classes = n_classes
         self.no_soft_mask = no_soft_mask
@@ -164,17 +180,19 @@ class ProtoSegNet(nn.Module):
             active_levels = [1, 2, 3, 4]
         self.proto_levels = active_levels
         # Keep single_scale for checkpoint backward compat
-        self.single_scale = (active_levels == [4])
+        self.single_scale = active_levels == [4]
 
         # ── Encoder ───────────────────────────────────────────────────────────
         self.encoder = HierarchicalEncoder2D(in_channels=1)
         ch = HierarchicalEncoder2D.CHANNELS  # {1:32, 2:64, 3:128, 4:256}
 
         # ── Prototype layers ──────────────────────────────────────────────────
-        self.proto_layers = nn.ModuleDict({
-            str(l): PrototypeLayer(n_classes, PROTOS_PER_LEVEL[l], ch[l])
-            for l in active_levels
-        })
+        self.proto_layers = nn.ModuleDict(
+            {
+                str(l): PrototypeLayer(n_classes, PROTOS_PER_LEVEL[l], ch[l])
+                for l in active_levels
+            }
+        )
 
         # ── Mask module ───────────────────────────────────────────────────────
         # hard_mask=True stores both modules; hard gating is activated only when
@@ -187,7 +205,7 @@ class ProtoSegNet(nn.Module):
         else:
             self.mask_module = SoftMaskModule()
             self._soft_mask_fallback = None
-        self.hard_mask_active: bool = False   # set True by trainer at Phase B start
+        self.hard_mask_active: bool = False  # set True by trainer at Phase B start
 
         # ── Level attention ───────────────────────────────────────────────────
         if use_level_attention and len(active_levels) > 1:
@@ -195,7 +213,7 @@ class ProtoSegNet(nn.Module):
         else:
             self.level_attention = None
         self._cached_attn_weights: torch.Tensor | None = None  # set during forward()
-        self.pruned_levels: set[int] = set()   # levels detached from gradient (Stage 25)
+        self.pruned_levels: set[int] = set()  # levels detached from gradient (Stage 25)
 
         # ── Decoder ───────────────────────────────────────────────────────────
         # dec4: upsample Z4 (16→32)  +  skip Z3  →  128 ch
@@ -251,8 +269,10 @@ class ProtoSegNet(nn.Module):
         # ── Level attention weights (optional) ───────────────────────────────
         # w: (B, n_active_levels) — only computed when level_attention is active
         if self.level_attention is not None:
-            w = self.level_attention(feat)   # (B, n_levels), softmax
-            self._cached_attn_weights = w    # cached for entropy regularisation in training loop
+            w = self.level_attention(feat)  # (B, n_levels), softmax
+            self._cached_attn_weights = (
+                w  # cached for entropy regularisation in training loop
+            )
         else:
             w = None
             self._cached_attn_weights = None
@@ -266,22 +286,30 @@ class ProtoSegNet(nn.Module):
                     # so the decoder sees this level as fully absent (equivalent to M2).
                     masked[l] = feat[l]
                 else:
-                    A = heatmaps[l]                              # (B, K, M, H_l, W_l)
+                    A = heatmaps[l]  # (B, K, M, H_l, W_l)
                     if w is not None:
                         # Weighted-sum over non-pruned levels only; renormalise so
                         # pruning a level does not shrink the blended signal magnitude.
-                        A_blended = torch.zeros_like(A[:, :, 0, :, :])  # (B, K, H_l, W_l)
+                        A_blended = torch.zeros_like(
+                            A[:, :, 0, :, :]
+                        )  # (B, K, H_l, W_l)
                         w_sum = torch.zeros(A.shape[0], 1, 1, 1, device=A.device)
                         for j, l2 in enumerate(self.proto_levels):
                             if l2 in self.pruned_levels:
                                 continue
-                            A_l2_max = heatmaps[l2].max(dim=2).values    # (B, K, H_l2, W_l2)
-                            A_l2_up  = F.interpolate(
-                                A_l2_max, size=A.shape[-2:],
-                                mode="bilinear", align_corners=False
-                            )                                             # (B, K, H_l, W_l)
-                            A_blended = A_blended + w[:, j:j+1, None, None] * A_l2_up
-                            w_sum     = w_sum + w[:, j:j+1, None, None]
+                            A_l2_max = (
+                                heatmaps[l2].max(dim=2).values
+                            )  # (B, K, H_l2, W_l2)
+                            A_l2_up = F.interpolate(
+                                A_l2_max,
+                                size=A.shape[-2:],
+                                mode="bilinear",
+                                align_corners=False,
+                            )  # (B, K, H_l, W_l)
+                            A_blended = (
+                                A_blended + w[:, j : j + 1, None, None] * A_l2_up
+                            )
+                            w_sum = w_sum + w[:, j : j + 1, None, None]
                         # Renormalise; when no pruning w_sum ≈ 1 so behaviour unchanged.
                         A_for_mask = (A_blended / (w_sum + 1e-8)).unsqueeze(2)
                     else:
@@ -298,12 +326,12 @@ class ProtoSegNet(nn.Module):
 
         # ── Decoder ──────────────────────────────────────────────────────────
         d = self.dec4(masked[4], masked[3])  # (B, 128, 32, 32)
-        d = self.dec3(d, masked[2])          # (B,  64, 64, 64)
-        d = self.dec2(d, masked[1])          # (B,  32, 128, 128)
+        d = self.dec3(d, masked[2])  # (B,  64, 64, 64)
+        d = self.dec2(d, masked[1])  # (B,  32, 128, 128)
         # Upsample to full resolution
         d = F.interpolate(d, scale_factor=2, mode="bilinear", align_corners=False)
-        d = self.dec1(d)                     # (B, 32, 256, 256)
-        logits = self.final_conv(d)          # (B, K, 256, 256)
+        d = self.dec1(d)  # (B, 32, 256, 256)
+        logits = self.final_conv(d)  # (B, K, 256, 256)
 
         return logits, heatmaps
 
