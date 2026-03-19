@@ -443,6 +443,70 @@ def compute_per_level_ap(
     return pd.DataFrame(rows).sort_values(["level", "class_idx"]).reset_index(drop=True)
 
 
+# ── 7. Effective Quality (dominance-weighted aggregate) ───────────────────────
+
+def compute_effective_quality(
+    purity_df: pd.DataFrame,
+    ap_df: pd.DataFrame,
+    compactness_df: pd.DataFrame,
+    dominance_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Dominance-weighted aggregate of purity, AP, and compactness across all active levels.
+
+        effective_purity      = Σ_l  frac_l × mean_fg_purity_l
+        effective_ap          = Σ_l  frac_l × mean_fg_ap_l
+        effective_compactness = Σ_l  frac_l × mean_fg_compactness_l
+
+    Using pixel-dominance fractions as weights makes this metric comparable across
+    models with different active level sets — a model where L2 dominates 76% of
+    pixels will be penalised for L2's poor purity regardless of L4's purity score.
+
+    Parameters
+    ----------
+    purity_df, ap_df, compactness_df
+        Outputs of compute_purity / compute_per_level_ap / compute_compactness.
+        Foreground rows only (background excluded by those functions already).
+    dominance_df
+        Single-row output of compute_level_dominance.
+
+    Returns
+    -------
+    Single-row DataFrame with columns:
+        effective_purity, effective_ap, effective_compactness
+        + per-level breakdown: weight_lN, purity_lN, ap_lN, compact_lN
+    """
+    purity_l  = purity_df.groupby("level")["purity"].mean().to_dict()
+    ap_l      = ap_df.groupby("level")["ap"].mean().to_dict()
+    compact_l = compactness_df.groupby("level")["compactness"].mean().to_dict()
+
+    active_levels = sorted(
+        int(col.split("_l")[1])
+        for col in dominance_df.columns
+        if col.startswith("frac_l") and dominance_df[col].values[0] > 0
+    )
+
+    row: dict = {}
+    eff_purity = eff_ap = eff_compact = 0.0
+    for l in active_levels:
+        w = float(dominance_df[f"frac_l{l}"].values[0])
+        p = purity_l.get(l, float("nan"))
+        a = ap_l.get(l, float("nan"))
+        c = compact_l.get(l, float("nan"))
+        row[f"weight_l{l}"]  = w
+        row[f"purity_l{l}"]  = p
+        row[f"ap_l{l}"]      = a
+        row[f"compact_l{l}"] = c
+        if not np.isnan(p): eff_purity  += w * p
+        if not np.isnan(a): eff_ap      += w * a
+        if not np.isnan(c): eff_compact += w * c
+
+    row["effective_purity"]      = eff_purity
+    row["effective_ap"]          = eff_ap
+    row["effective_compactness"] = eff_compact
+    return pd.DataFrame([row])
+
+
 # ── Atlas Builder ─────────────────────────────────────────────────────────────
 
 @torch.no_grad()

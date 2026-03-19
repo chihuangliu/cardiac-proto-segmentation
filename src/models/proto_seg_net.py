@@ -195,6 +195,7 @@ class ProtoSegNet(nn.Module):
         else:
             self.level_attention = None
         self._cached_attn_weights: torch.Tensor | None = None  # set during forward()
+        self.pruned_levels: set[int] = set()   # levels detached from gradient (Stage 25)
 
         # ── Decoder ───────────────────────────────────────────────────────────
         # dec4: upsample Z4 (16→32)  +  skip Z3  →  128 ch
@@ -234,10 +235,17 @@ class ProtoSegNet(nn.Module):
         # ── Encoder ──────────────────────────────────────────────────────────
         feat = self.encoder(x)  # {1: Z1, 2: Z2, 3: Z3, 4: Z4}
 
+        # Detach pruned levels so no gradient flows back through those encoder stages.
+        # The decoder skip connection receives a zero tensor so the pruned architecture
+        # is equivalent to M2 (levels truly absent), not just gradient-stopped.
+        for l in self.pruned_levels:
+            if l in feat:
+                feat[l] = torch.zeros_like(feat[l])
+
         # ── Prototype heatmaps ────────────────────────────────────────────────
         heatmaps: dict[int, torch.Tensor] = {}
         for l in [1, 2, 3, 4]:
-            if str(l) in self.proto_layers:
+            if str(l) in self.proto_layers and l not in self.pruned_levels:
                 heatmaps[l] = self._proto_layer(l)(feat[l])  # (B, K, M, H_l, W_l)
 
         # ── Level attention weights (optional) ───────────────────────────────
@@ -253,31 +261,38 @@ class ProtoSegNet(nn.Module):
         masked: dict[int, torch.Tensor] = {}
         for l in [1, 2, 3, 4]:
             if str(l) in self.proto_layers:
-                A = heatmaps[l]                              # (B, K, M, H_l, W_l)
-                if w is not None:
-                    # Weighted-sum aggregation: blend A with attention-weighted
-                    # contributions from all other active levels (upsampled to H_l, W_l).
-                    # A_blended[k] = Σ_{l'} w[:,i_{l'}] * upsample(max_m A[l',k,m])
-                    i_l = self.proto_levels.index(l)
-                    A_blended = torch.zeros_like(A[:, :, 0, :, :])  # (B, K, H_l, W_l)
-                    for j, l2 in enumerate(self.proto_levels):
-                        A_l2_max = heatmaps[l2].max(dim=2).values    # (B, K, H_l2, W_l2)
-                        A_l2_up  = F.interpolate(
-                            A_l2_max, size=A.shape[-2:],
-                            mode="bilinear", align_corners=False
-                        )                                             # (B, K, H_l, W_l)
-                        A_blended = A_blended + w[:, j:j+1, None, None] * A_l2_up
-                    # Expand to (B, K, 1, H_l, W_l) to reuse mask module interface
-                    A_for_mask = A_blended.unsqueeze(2)
-                else:
-                    A_for_mask = A
-
-                if self.no_soft_mask:
+                if l in self.pruned_levels:
+                    # Pruned: feat[l] is already zeros (set above); pass zeros as skip
+                    # so the decoder sees this level as fully absent (equivalent to M2).
                     masked[l] = feat[l]
-                elif self.hard_mask and not self.hard_mask_active:
-                    masked[l] = self._soft_mask_fallback(A_for_mask, feat[l])
                 else:
-                    masked[l] = self.mask_module(A_for_mask, feat[l])
+                    A = heatmaps[l]                              # (B, K, M, H_l, W_l)
+                    if w is not None:
+                        # Weighted-sum over non-pruned levels only; renormalise so
+                        # pruning a level does not shrink the blended signal magnitude.
+                        A_blended = torch.zeros_like(A[:, :, 0, :, :])  # (B, K, H_l, W_l)
+                        w_sum = torch.zeros(A.shape[0], 1, 1, 1, device=A.device)
+                        for j, l2 in enumerate(self.proto_levels):
+                            if l2 in self.pruned_levels:
+                                continue
+                            A_l2_max = heatmaps[l2].max(dim=2).values    # (B, K, H_l2, W_l2)
+                            A_l2_up  = F.interpolate(
+                                A_l2_max, size=A.shape[-2:],
+                                mode="bilinear", align_corners=False
+                            )                                             # (B, K, H_l, W_l)
+                            A_blended = A_blended + w[:, j:j+1, None, None] * A_l2_up
+                            w_sum     = w_sum + w[:, j:j+1, None, None]
+                        # Renormalise; when no pruning w_sum ≈ 1 so behaviour unchanged.
+                        A_for_mask = (A_blended / (w_sum + 1e-8)).unsqueeze(2)
+                    else:
+                        A_for_mask = A
+
+                    if self.no_soft_mask:
+                        masked[l] = feat[l]
+                    elif self.hard_mask and not self.hard_mask_active:
+                        masked[l] = self._soft_mask_fallback(A_for_mask, feat[l])
+                    else:
+                        masked[l] = self.mask_module(A_for_mask, feat[l])
             else:
                 masked[l] = feat[l]
 
@@ -339,6 +354,18 @@ class ProtoSegNet(nn.Module):
         """Unfreeze every parameter."""
         for p in self.parameters():
             p.requires_grad_(True)
+
+    def prune_level(self, level: int) -> None:
+        """
+        Hard-soft prune a prototype level:
+          - Add to pruned_levels so forward() zeroes its encoder features
+            (decoder skip connection receives zeros → truly absent, like M2).
+          - Freeze its PrototypeLayer parameters (no further gradient).
+        """
+        self.pruned_levels.add(level)
+        if str(level) in self.proto_layers:
+            for p in self.proto_layers[str(level)].parameters():
+                p.requires_grad_(False)
 
     def count_parameters(self) -> dict[str, int]:
         total = sum(p.numel() for p in self.parameters())

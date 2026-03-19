@@ -1,0 +1,6 @@
+Model,Aggregation,3D Dice,Purity L4,Compact. L4,AP L4,Dom. L4
+M4 (max),max,0.8407,0.824,0.573,0.189,4.3%
+M4-attn λ=0.02,uniform avg,0.7861,0.526,0.575,0.187,9.7%
+M4-attn λ=0,learned,0.8416,0.537,0.494,0.085,12.5%
+M4-attn wloss,learned+wloss,0.8475,0.697,0.365,0.195,17.5%
+M2 (max),max,0.8722,0.804,0.361,0.236,49.1%
