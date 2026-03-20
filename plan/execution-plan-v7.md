@@ -46,9 +46,9 @@ effective prototype quality than either cold-start M2 or the v6 warm-start varia
 **RQ11:** Does fixing `LevelAttentionModule` (feature detach + temperature annealing)
 produce stable, seed-independent level discovery that reliably converges to L3+L4?
 
-**RQ12:** Does the fully automated two-stage pipeline — fixed Stage 1 discovers L3+L4
-automatically → Stage 2 warm-starts from that encoder — match or exceed cold-start M2
-on both 3D Dice and effective prototype quality (effective purity, effective AP)?
+**RQ12:** Given a single trained M4 model, can inference-time level ablation identify
+the level subset that lies on the Pareto front of segmentation Dice vs prototype purity,
+without any retraining or prior knowledge of which levels are interpretability-optimal?
 
 ---
 
@@ -57,12 +57,10 @@ on both 3D Dice and effective prototype quality (effective purity, effective AP)
 | Model | 3D Dice | Eff. Purity | Notes |
 |-------|---------|-------------|-------|
 | M2 cold-start | 0.8722 | ~0.77 (est.) | Best overall; manual L3+L4 |
-| **L3+L4 warmstart (Exp A)** | **0.8656** | **0.649** | New best warm-start |
-| L2+L3+L4 warmstart (v6) | 0.8635 | ~0.267 | Previous best on Dice |
-| M4-attn wloss (v6) | 0.8475 | ~0.122 | Best v6 single-model |
-
-Target for Exp C: **3D Dice ≥ 0.8722** and **effective purity ≥ 0.70** — Exp A
-proves the pipeline concept works; Exp C with a clean encoder should close the gap.
+| L3+L4 warm-start (Stage 29) | 0.8656 | 0.649 | Best warm-start |
+| L2+L3+L4 warm-start (v6) | 0.8635 | ~0.267 | Previous best on Dice |
+| M4 noent (v6, all levels) | ~0.87 | ~0.12 | Starting point for Stage 31 ablation |
+| M4-attn wloss (v6) | 0.8475 | ~0.122 | |
 
 ---
 
@@ -226,98 +224,74 @@ problem is a fundamental objective mismatch that cannot be resolved within this 
 
 ---
 
-## Experiment C — Full Automated Pipeline ⬜ SKIPPED
-
-### Reason for skipping
-
-Exp B revealed a fundamental objective mismatch: segmentation-driven attention always
-prefers L2 over L4, regardless of architectural fixes. Exp C's premise — that Stage 1
-auto-discovers L3+L4 — cannot hold. Any attention-based discovery trained on segmentation
-loss will discover levels optimal for segmentation (L2-dominant), not for prototype quality.
-
-Running Exp C would produce a warm-start Stage 2 with an L2+L3-discovered level set,
-which is known from v6-D to give poor effective purity (~0.267). This is worse than
-the manually-specified Exp A (eff. purity=0.649).
-
-### What "automation" can and cannot mean here
-
-| Can automate | Cannot automate (via seg-loss attention) |
-|---|---|
-| Confirming L1 is always uninformative (w_L1→0, consistent) | Discovering that L4 > L2 for prototype quality |
-| Providing a warm-start encoder via Stage 1 | Selecting the interpretability-optimal level set |
-| Reducing training time vs cold-start | Replacing empirical level ablation |
-
-### RQ12 Answer: NOT TESTABLE as originally posed
-
-The automation goal requires a mechanism that jointly optimises segmentation and
-prototype quality. A pure segmentation-loss attention cannot do this. This is a
-finding, not a failure — it correctly identifies the boundary of what attention-based
-discovery can achieve.
-
-**Future direction (out of scope for v7):** Multi-objective attention that adds a
-prototype purity term to the attention loss, penalising levels with low purity from
-receiving high weight. This would require online purity estimation during training.
-
----
-
 ## Stage Overview
 
 | Stage | Name | Deliverable | Status |
 |-------|------|-------------|--------|
-| 29 | Exp A: Warm-start L3+L4 (existing Stage 1) | `notebooks/29_warmstart_l3l4.ipynb` | ✅ |
-| 30 | Exp B: Fix LevelAttentionModule | `notebooks/30_fixed_stage1.ipynb` | ✅ (partial — see findings) |
-| 31 | Exp C: Full automated pipeline | `notebooks/31_auto_pipeline.ipynb` | ⬜ skipped |
-| 32 | Report v7 | `report/v7/report-v7.md` | ⬜ |
+| 29 | Warm-start L3+L4 (existing Stage 1 encoder) | `notebooks/29_warmstart_l3l4.ipynb` | ✅ |
+| 30 | Fix LevelAttentionModule (detach + temperature) | `notebooks/30_fixed_stage1.ipynb` | ✅ (partial — see findings) |
+| 31 | Report v7 | `report/v7/report-v7.md` | ⬜ |
 
 ---
 
-## Exp A Independence and Effect on B/C
+## Stage Independence
 
-Exp A and B test **independent** hypotheses — neither blocks the other:
-
-| Exp A outcome | Effect on B | Effect on C |
-|---|---|---|
-| **Dice ≥ M2 + eff.purity ≥ 0.60** (full success) | B still runs — Exp A required manually specifying L3+L4; B provides the automation | C is high-confidence — warm-start with correct levels works; just needs reliable discovery |
-| **Dice OK, purity < 0.60** | B still runs — cleaner Stage 1 encoder may rescue purity in C | C hypothesis shifts: relying on B's encoder being cleaner |
-| **Dice < M2** (hard failure) | B still runs — fixed Stage 1 produces less L2-contaminated encoder | C is now the primary hope |
-
-**Actual outcome: PARTIAL (3/4).** Dice OK, eff. purity ✅, L4 dominance ✅, Dice vs M2 ❌ (−0.0066).
-
-**Exp B finding:** detach + temperature work mechanically, but MLP correctly learns L2 > L4
-for segmentation. Objective mismatch is fundamental — not fixable within this architecture.
-
-**Exp C: SKIPPED.** Automation of interpretability-optimal level selection via segmentation
-attention is not achievable. L3+L4 is accepted as the empirically-justified level set.
+| Stage | Outcome |
+|-------|---------|
+| 29: Warm-start L3+L4 | PARTIAL (3/4). Dice=0.8656, eff.purity=0.649 |
+| 30: Fix LevelAttention | NOT MET. Detach+temp work mechanically but MLP converges to L2+L3, not L3+L4 (objective mismatch) |
 
 ## Decision Tree (final)
 
 ```
-Stage 29: Exp A  ──── ✅  Dice=0.8656, eff.purity=0.649  [PARTIAL 3/4]
-    │               Best warm-start result; pipeline concept validated
+Stage 29: Warm-start L3+L4  ──── ✅  Dice=0.8656, eff.purity=0.649  [PARTIAL 3/4]
+    │                              Best warm-start; pipeline concept validated
     │
-Stage 30: Exp B  ──── ✅  T=5 keeps uniform during warmup ✅
-    │               But MLP converges to L2+L3 (not L3+L4) once T drops
-    │               Root cause: seg-loss attention ≠ interpretability-optimal attention
-    │               Fundamental objective mismatch — not a fixable bug
+Stage 30: Fix LevelAttention ──── ✅  T=5 keeps uniform during warmup ✅
+    │                              MLP converges to L2+L3 once T drops
+    │                              Fundamental objective mismatch — not fixable
     │
-Stage 31: Exp C  ──── ⬜ SKIPPED
-    │               Premise invalidated by Exp B finding
-    │               Would produce L2-dominated warm-start (same failure as v6-D)
-    │
-Stage 32: Report v7  ──── ⬜ next
+Stage 31: Report v7          ──── ⬜ next
 ```
 
 ---
 
+## Abandoned Directions
+
+### Post-hoc level ablation (`notebooks/31_ablation_level_selection.ipynb`)
+
+**What was tried:** Load trained M4 model; zero out each level subset via
+`pruned_levels` at inference time; measure 3D Dice + effective purity for all
+15 non-empty subsets of {L1,L2,L3,L4}; identify Pareto-optimal subset from
+the (Dice, eff_purity) front.
+
+**What the ablation found:**
+- Any subset without L4 gives Dice = 0. L4 is a hard architectural dependency
+  of the M4 decoder (deepest `dec4` block receives zeros without it).
+- {L3,L4} is on the Pareto front — but so are {L4}, {L1,L3,L4}, {L2,L3,L4},
+  and {L1,L2,L3,L4}. Five subsets are Pareto-optimal simultaneously.
+- {L3,L4} ablation Dice = 0.695 vs its true achievable Dice = 0.866 (Stage 29).
+  The 0.17 gap is co-adaptation noise: the M4 decoder was trained with all 4
+  levels and cannot be reliably evaluated on subsets at inference time.
+
+**Why it fails as a discovery tool:**
+1. The Pareto front is non-unique — 5 subsets are returned, not one.
+2. No automatic rule selects {L3,L4} from those 5 without a human setting a
+   Dice-sacrifice threshold.
+3. Even with a threshold, the ablation Dice values are unreliable (−0.17 bias),
+   so the threshold cannot be set correctly without retraining anyway.
+
+**Conclusion:** Post-hoc ablation is descriptive (shows decoder dependencies)
+but not prescriptive (cannot identify the interpretability-optimal level set
+without prior knowledge). The ablation confirms {L3,L4} is on the front, but
+only because we already know it is the right choice from Stage 29.
+
 ## Risk Register
 
-| Risk | Likelihood | Mitigation |
-|------|-----------|------------|
-| Exp A Dice < M2: encoder L3 reps contaminated by L2 training | Medium | Exp B (fixed Stage 1) should produce cleaner L3 reps; run Exp C anyway |
-| Exp A effective purity < 0.60: L4 still dominated despite no L2 skip | Low | L2 skip removed entirely; decoder must rely on L3+L4 |
-| Exp B: detach causes attention to converge too slowly | Low | Temperature annealing provides principled warm-up; monitor w evolution |
-| Exp B: all seeds converge to L4-only (not L3+L4) | Low | Stage 1 segmentation loss still flows through all skips; L3 skip useful for mid-size structures |
-| Exp C: Stage 2 over-fits warm-start encoder (slow feature adaptation) | Medium | FREEZE_ENCODER_PHASE_A=False ensures encoder adapts from ep 1 |
+| Risk | Outcome |
+|------|---------|
+| Stage 29 Dice < M2 (−0.0066): encoder L2 contamination | Observed. Accepted as warm-start residual. |
+| Stage 30 MLP converges to wrong levels | Observed. Root cause: objective mismatch. |
 
 ---
 
@@ -344,26 +318,22 @@ src/
     proto_seg_net.py                      # LevelAttentionModule: detach + temperature param
 
 notebooks/
-  29_warmstart_l3l4.ipynb                 # Exp A: train + eval (warm-start L3+L4)
-  30_fixed_stage1.ipynb                   # Exp B: train + eval (fixed Stage 1, 3 seeds)
-  31_auto_pipeline.ipynb                  # Exp C: train + eval (full automated pipeline)
+  29_warmstart_l3l4.ipynb                 # Stage 29: train + eval (warm-start L3+L4)
+  30_fixed_stage1.ipynb                   # Stage 30: train + eval (fixed LevelAttention, seed=42)
+  31_ablation_level_selection.ipynb       # Abandoned: post-hoc ablation (negative result)
 
 results/v7/
   train_curve_proto_ct_l3l4_warmstart.csv
   train_curve_fixed_stage1_seed42.csv
-  train_curve_fixed_stage1_seed0.csv
-  train_curve_fixed_stage1_seed123.csv
-  attention_evolution_fixed_seed42.csv
-  attention_evolution_fixed_seed0.csv
-  attention_evolution_fixed_seed123.csv
-  train_curve_auto_warmstart.csv
+  attn_evolution_fixed_seed42.csv
+  ablation_results.csv                    # Abandoned stage: 15-row subset table
+  pareto_front_ablation.png              # Abandoned stage: Pareto front
   comparison_table_v7.csv
   effective_quality_v7.csv
 
 checkpoints/
-  proto_seg_ct_l3l4_warmstart_v7.pth     # Exp A
-  proto_seg_ct_l1234_attn_fixed.pth      # Exp B (seed=42 representative)
-  proto_seg_ct_auto_warmstart.pth        # Exp C
+  proto_seg_ct_l3l4_warmstart_v7.pth     # Stage 29
+  proto_seg_ct_l1234_attn_fixed.pth      # Stage 30 (seed=42)
 
 report/v7/
   report-v7.md
