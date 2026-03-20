@@ -1,0 +1,5 @@
+level,purity_plain_m4,purity_attn_m4,delta,selected
+1,0.0357,0.084,-0.0483,False
+2,0.1648,0.195,-0.0302,False
+3,0.6186,0.613,0.0056,True
+4,0.6429,0.689,-0.0461,True

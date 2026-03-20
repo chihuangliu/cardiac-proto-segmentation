@@ -1,0 +1,5 @@
+model,3d_dice,purity_l3,purity_l4,effective_purity,alc_levels,l3_dev_px
+"Stage 29 (no ALC, attn warm-start)",0.8656,0.486,0.774,0.649,none,
+"Stage 34 (ALC L3+L4, λ=0.05)",0.8478,0.646,0.67,0.661,L3+L4,37.2
+"Stage 34b (ALC L3 only, λ=0.05)",0.8628466171877724,0.4042857142857143,0.6885714285714286,0.5928099647350829,L3,36.79415320364897
+M2 cold-start (best overall),0.8722,,0.804,,none,

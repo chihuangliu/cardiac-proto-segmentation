@@ -194,13 +194,17 @@ class ProtoSegLoss:
                 + lambda_div  * L_div
                 + lambda_push * L_push
                 + lambda_pull * L_pull
+                + lambda_alc  * L_ALC   (optional, default 0.0 = off)
 
     Args:
-        seg_loss     : SegmentationLoss instance (Dice + WeightedCE)
-        lambda_div   : weight on diversity loss (default 0.01)
-        lambda_push  : weight on push alignment loss (default 0.0 = off)
-        lambda_pull  : weight on pull alignment loss (default 0.0 = off)
-        exclude_bg   : exclude background class from diversity and push-pull
+        seg_loss      : SegmentationLoss instance (Dice + WeightedCE)
+        lambda_div    : weight on diversity loss (default 0.01)
+        lambda_push   : weight on push alignment loss (default 0.0 = off)
+        lambda_pull   : weight on pull alignment loss (default 0.0 = off)
+        exclude_bg    : exclude background class from diversity and push-pull
+        lambda_alc    : weight on ALC loss (default 0.0 = off)
+        alc_mu        : (K, 2) anatomical priors for ALC; required if lambda_alc > 0
+        alc_levels    : list of level keys to apply ALC to (e.g. [3, 4])
     """
 
     def __init__(
@@ -210,12 +214,18 @@ class ProtoSegLoss:
         lambda_push: float = 0.0,
         lambda_pull: float = 0.0,
         exclude_bg: bool = True,
+        lambda_alc: float = 0.0,
+        alc_mu=None,
+        alc_levels=None,
     ):
         self.seg_loss = seg_loss
         self.lambda_div = lambda_div
         self.lambda_push = lambda_push
         self.lambda_pull = lambda_pull
         self.exclude_bg = exclude_bg
+        self.lambda_alc = lambda_alc
+        self.alc_mu = alc_mu
+        self.alc_levels = alc_levels or []
 
     def __call__(
         self,
@@ -231,7 +241,7 @@ class ProtoSegLoss:
 
         Returns:
             dict with keys: 'loss', 'dice_loss', 'ce_loss', 'div_loss',
-                            'push_loss', 'pull_loss'
+                            'push_loss', 'pull_loss', 'alc_loss'
         """
         seg_out = self.seg_loss(logits, labels)
         div_loss = prototype_diversity_loss(A_dict, exclude_bg=self.exclude_bg)
@@ -244,6 +254,18 @@ class ProtoSegLoss:
             + self.lambda_push * push_loss
             + self.lambda_pull * pull_loss
         )
+
+        alc_l = torch.zeros(1, device=logits.device)
+        if self.lambda_alc > 0.0 and self.alc_mu is not None and self.alc_levels:
+            from src.losses.alc_loss import alc_loss as _alc_loss
+            alc_l = _alc_loss(
+                A_dict,
+                self.alc_mu,
+                self.alc_levels,
+                foreground=list(range(1, logits.shape[1])),
+            )
+            total = total + self.lambda_alc * alc_l
+
         return {
             "loss": total,
             "dice_loss": seg_out["dice_loss"],
@@ -251,4 +273,5 @@ class ProtoSegLoss:
             "div_loss": div_loss,
             "push_loss": push_loss,
             "pull_loss": pull_loss,
+            "alc_loss": alc_l,
         }
