@@ -61,14 +61,22 @@ def prototype_diversity_loss(
     """
     Diversity loss over all encoder levels and prototype pairs within each class.
 
+    Uses exp(-D_J) per pair (bounded in [0, 1]) — identical to the ProtoSeg
+    repo formulation.  Minimising exp(-D_J) maximises Jeffrey's divergence
+    between prototype heatmap distributions, encouraging diverse prototypes.
+
+    Compared to the previous 1/(D_J+eps) formulation:
+      - Bounded: when D_J=0, loss=1.0  (not 1/eps = 1e8)
+      - Safe with larger λ_div values (e.g. 0.01)
+
     Args:
         A_dict     : { level_int : heatmap tensor (B, K, M, H_l, W_l) }
                      as returned by PrototypeLayer per level.
         exclude_bg : if True, skip class k=0 (background).
-        eps        : numerical stability term added to D_J in the denominator.
+        eps        : numerical stability for KL divergence internals.
 
     Returns:
-        Scalar loss tensor (requires_grad=True when A_dict tensors do).
+        Scalar loss tensor in [0, n_pairs], requires_grad=True when inputs do.
     """
     total_loss = torch.zeros(1, device=_first_device(A_dict))
 
@@ -98,8 +106,8 @@ def prototype_diversity_loss(
                     p_m = P_k[:, m, :]  # (B, H*W)
                     p_n = P_k[:, n, :]  # (B, H*W)
                     d_j = _jeffrey_divergence(p_m, p_n, eps=eps)
-                    # Penalise small divergence (encourage large D_J)
-                    total_loss = total_loss + 1.0 / (d_j + eps)
+                    # exp(-D_J) ∈ [0,1]: minimising pushes D_J → large
+                    total_loss = total_loss + torch.exp(-d_j)
 
     return total_loss.squeeze()
 

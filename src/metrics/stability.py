@@ -48,7 +48,7 @@ def _stability_single_slice(
     x_pert = (x + eps).clamp(0.0, 1.0)                         # (N, 1, H, W)
 
     # Single batched forward pass for all perturbations
-    _, heatmaps_pert = model(x_pert)
+    _, heatmaps_pert, _w = model(x_pert)
     phi_xp = _phi(heatmaps_pert, target_size=(H, W))            # (N, K*H*W)
 
     # ||Φ(X) − Φ(X')||_2 for each perturbation
@@ -100,7 +100,7 @@ def stability_patient(
     ratios: list[float] = []
     for i in indices.tolist():
         x = images[i : i + 1].to(device)   # (1, 1, H, W)
-        _, heatmaps = model(x)
+        _, heatmaps, _w = model(x)
         r = _stability_single_slice(model, x, heatmaps, device, n_perturb, sigma)
         if r == r:                          # not nan
             ratios.append(r)

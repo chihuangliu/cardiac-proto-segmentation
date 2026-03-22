@@ -52,7 +52,7 @@ def _faithfulness_single_slice(
     E_sampled = E_flat[sampled_idx]
 
     # --- Original prediction ---
-    logits_orig, _ = model(x)                                   # (1, K, H, W)
+    logits_orig, _, _w = model(x)                               # (1, K, H, W)
     probs_orig = logits_orig[0].softmax(dim=0).reshape(logits_orig.shape[1], -1)  # (K, H*W)
     pred_class_flat = logits_orig[0].argmax(dim=0).flatten()    # (H*W,)
 
@@ -77,7 +77,7 @@ def _faithfulness_single_slice(
         x_rep_flat[torch.arange(b, device=device), pix_t] = 0.0
         x_pert = x_rep_flat.reshape(b, 1, H, W)
 
-        logits_p, _ = model(x_pert)                         # (b, K, H, W)
+        logits_p, _, _w = model(x_pert)                     # (b, K, H, W)
         probs_p = logits_p.softmax(dim=1)                   # (b, K, H, W)
         probs_p_flat = probs_p.reshape(b, logits_p.shape[1], -1)  # (b, K, H*W)
 
@@ -124,7 +124,7 @@ def faithfulness_patient(
     corrs: list[float] = []
     for i in indices.tolist():
         x = images[i : i + 1].to(device)   # (1, 1, H, W)
-        _, heatmaps = model(x)
+        _, heatmaps, _w = model(x)
         r = _faithfulness_single_slice(model, x, heatmaps, device, n_pixels, infer_batch)
         if r == r:                          # not nan
             corrs.append(r)
