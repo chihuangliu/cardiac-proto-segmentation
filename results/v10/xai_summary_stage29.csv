@@ -1,0 +1,7 @@
+Metric,Value,Min gate,Target,Pass
+Val Dice,0.8214519960539681,,,—
+Effective Purity,0.03236236392114632,,,—
+Effective AP,0.02633195760642185,0.15,0.25,❌
+Effective Compact.,0.7481565139794109,,,—
+Faithfulness,0.06885094254144618,0.15,0.3,❌
+Stability,3.3816478300094603,,2.0,❌

@@ -1,0 +1,6 @@
+model,dice,ap,note
+Baseline U-Net,0.823332531111581,0.34886265712336073,proxy heatmap = softmax output
+Stage 29 (skip L3+L4),0.821,0.051,"prototype heatmaps, bypass active"
+Stage 8A (skip L4),0.81,0.057,"prototype heatmaps, bypass active"
+9b (no-skip L3+L4),0.559,0.301,"prototype heatmaps, no bypass"
+9a (no-skip L4),0.606,0.312,"prototype heatmaps, no bypass"
