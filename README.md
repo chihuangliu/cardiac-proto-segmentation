@@ -19,7 +19,8 @@ The core result: **no architecture simultaneously achieves Dice > 0.80 and AP > 
 | noskip-16 (no-skip, 16×16) | 0.606 | **0.312** | Yes (bypass = 0 by construction) |
 | noskip-32+16 (no-skip, 32×32+16×16) | 0.559 | 0.301 | Yes (bypass = 0 by construction) |
 
-Full report: `report/v11/report-v11.md`
+Please read the [full paper](paper.pdf)
+
 
 ---
 
